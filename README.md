@@ -33,7 +33,7 @@ it runs.
 │ 9 nodes: 48 CPUs / 2011 GB / 8x h100 · 1 node: 96 CPUs / 2011 GB / 8x h100                                                                         │
 │ CPUs 104 free / 328 allocated / 96 unavailable of 528 · Memory 12045 GB free of 20117 GB                                                           │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- r Refresh  p Re-probe  e Edit request  l Log in  q Quit  M Email  C Config  ? Keys
+ Refresh   Re-probe   Edit request   Email: off   Config   Quit
 ```
 
 ## Requirements
@@ -57,11 +57,11 @@ There are no options. The first tab is the cluster you are logged in to (from
 Every other cluster with an `ssh` host in the [config file](#configuration) (Fir,
 Killarney and Tamia) gets a tab too, but is only contacted, over ssh, once you open its
 tab (click it). Every probe starts as 4 CPUs and 32 GB at each partition
-time limit with `sbatch`; change a tab's request with `e` (CPUs, memory, walltimes,
-extra `sbatch` options), and click the command under Start estimates to switch between
-`sbatch` and `srun`. The visible tab refreshes every minute and re-probes every five.
-Press `M` to email the report every hour until you quit
-([Hourly email](#hourly-email)).
+time limit with `sbatch`; change a tab's request with `Edit request` (CPUs, memory,
+walltimes, extra `sbatch` options), and click the command under Start estimates to
+switch between `sbatch` and `srun`. The visible tab refreshes every minute and re-probes
+every five. Click `Email: off` to email the report every hour until you quit
+([Hourly email](#hourly-email)). Everything is a click: see [Mouse](#mouse).
 
 Probes use `--test-only`, so nothing is submitted or cancelled until you confirm a
 Submit or Release (see below), and it is safe to run on a shared login node. Run it on
@@ -72,12 +72,24 @@ with "Requested operation is presently disabled".
 
 Remote tabs run Slurm on the cluster's login node through `ssh`, with your
 `~/.ssh/config` (aliases, users, keys). Nothing is sent to a remote cluster until you
-open its tab, and only the visible tab refreshes. When you open one and ssh needs a
-password or MFA, the dashboard steps aside so ssh can ask in the terminal, then comes
-back. It reuses an ssh control master for every later command: yours if your config
-sets `ControlMaster`, otherwise its own, which closes 10 minutes after the last use (so
-a tab left unopened that long may ask again). If a connection drops later, the tab says
-why; press `l` to log in again.
+open its tab, and only the visible tab refreshes.
+
+slurmtop never asks for a password or MFA. For a cluster that needs one, let ssh share
+connections and log in with `ssh` in another terminal first; slurmtop reuses that
+connection:
+
+```
+# ~/.ssh/config
+Host *.alliancecan.ca
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%C
+    ControlPersist 4h
+```
+
+After `ssh fir.alliancecan.ca`, the connection stays open for 4 hours after your last
+session there closes. With keys that log in without a prompt, nothing is needed:
+slurmtop opens its own shared connection, which closes 10 minutes after the last use.
+A tab that cannot connect shows ssh's error and how to connect; then click `Refresh`.
 
 The text report printed when output is not a terminal covers the cluster you are on;
 it covers the remote ones only where Slurm is not available.
@@ -87,27 +99,27 @@ only for your accounts and QOS, because login nodes can take seconds to start a
 session and the full cache can be tens of MB. Commands for a remote cluster are shown
 with its host as the prompt (`fir.alliancecan.ca$ sbatch ...`): run them there.
 
-### Keys
+### Mouse
 
-| Key | Action |
+slurmtop has no keyboard shortcuts: everything is a click. The bar at the bottom holds
+the dashboard's actions, and each dialog closes with its own buttons.
+
+| Click | Action |
 | --- | --- |
-| `1`–`4`, `Tab` | Focus Partitions, Accounts & QOS, Start estimates, My jobs |
-| arrows | Move; the Details panel follows the selection |
-| `Enter` (Accounts & QOS) | Probe with that account/QOS |
-| `e` | Edit the probe request: whole node, CPUs, memory, walltimes, extra options such as `--partition` or `--constraint`, and the email address (blank for none) |
-| `p` / `r` | Re-probe / refresh everything now |
-| click the Partitions title | Switch between Partitions and Nodes by hardware |
-| click the account/QOS above the estimates | Probe with the next account/QOS |
-| click the command under Start estimates | Switch between `sbatch` and `srun` probes |
-| click `Submit` in Details | Submit the selected `sbatch` request, after you confirm |
-| click a cluster tab | Show that cluster |
-| click `Copy` after a command in Details | Copy that command |
-| click `Release` in a job's Details | Release the job with `scancel`, after you confirm |
-| `l` | Log in to a remote cluster again (ssh asks for any password or MFA) |
-| `M` | Email the report now and every hour until you quit; press again to stop |
-| `C` | Edit the [config](#configuration) in a form; saving writes the file and applies it |
-| `?` | Key help |
-| `q` | Quit |
+| a cluster tab | Show that cluster |
+| a row or cell | Select it; the Details panel follows the selection |
+| a highlighted Accounts & QOS row | Probe with that account/QOS |
+| the Partitions title | Switch between Partitions and Nodes by hardware |
+| the account/QOS above the estimates | Probe with the next account/QOS |
+| the command under Start estimates | Switch between `sbatch` and `srun` probes |
+| `Submit` in Details | Submit the selected `sbatch` request, after you confirm |
+| `Copy` after a command in Details | Copy that command |
+| `Release` in a job's Details | Release the job with `scancel`, after you confirm |
+| `Refresh` / `Re-probe` | Refresh everything / re-probe now |
+| `Edit request` | Edit the probe request: whole node, CPUs, memory, walltimes, extra options such as `--partition` or `--constraint`, and the email address (blank for none) |
+| `Email: off` / `Email: on` | Email the report now and every hour until you quit / stop; the label says which is on |
+| `Config` | Edit the [config](#configuration) in a form; saving writes the file and applies it |
+| `Quit` | Quit |
 
 ## Reading the dashboard
 
@@ -141,8 +153,7 @@ with its host as the prompt (`fir.alliancecan.ca$ sbatch ...`): run them there.
   `--output=/dev/null`, so no `slurm-<jobid>.out` file is left behind.
   `--account`/`--qos` are left out when Slurm would pick them anyway.
 - **Submit**: click the `Submit` label in Details to run an `sbatch` command, after a
-  dialog shows it and asks you to confirm; the dialog starts on Cancel, so Enter or Esc
-  submits nothing. The job is submitted in the background (on the cluster's login node
+  dialog shows it and asks you to confirm; `Cancel` submits nothing. The job is submitted in the background (on the cluster's login node
   for a remote tab), its id pops up, and My jobs refreshes; it holds the allocation with
   `sleep infinity` until the time limit; its details in My jobs show the `scancel`
   command that releases it. An `srun` command opens an interactive shell, so `Submit`
@@ -162,11 +173,11 @@ with its host as the prompt (`fir.alliancecan.ca$ sbatch ...`): run them there.
 
 All settings live in one file, `~/.config/slurmtop/config.toml`
 (`$XDG_CONFIG_HOME/slurmtop/config.toml` if you set that): email (`[mail]`, `[smtp]`)
-and cluster profiles (`[clusters.<name>]`). Press `C` in the dashboard to edit it in a
-form: the job email address and states, the hourly email's server, port, sender,
+and cluster profiles (`[clusters.<name>]`). Click `Config` in the dashboard to edit it
+in a form: the job email address and states, the hourly email's server, port, sender,
 password and recipient, and one row per cluster (name, GPU counts picked from `pow2`,
-`all` and `whole_node`, and ssh host) with `Add cluster` and `Remove`. `Tab` moves between fields, `Escape`
-cancels. `Save` checks the settings (a problem is shown under the form, which stays
+`all` and `whole_node`, and ssh host) with `Add cluster` and `Remove`. `Cancel` closes
+it unchanged. `Save` checks the settings (a problem is shown under the form, which stays
 open), writes the file privately (`chmod 600`, since it holds the SMTP password) and
 applies what changed without a restart: clusters added get tabs and removed ones lose
 theirs, changed profiles and `[mail]` settings are probed again, and the hourly email
@@ -181,7 +192,7 @@ without comments.
 Nothing is hardcoded per cluster: partitions, GPU types, time tiers, accounts and
 limits are read from Slurm. A profile records only what Slurm cannot report, keyed by
 the cluster name. To add a cluster, or a tab for one you are not logged in to, add a
-row in the config form (`C`); in the file it is a table:
+row in the config form (`Config`); in the file it is a table:
 
 ```toml
 [clusters.mycluster]          # the ClusterName from `scontrol show config`
@@ -206,12 +217,12 @@ gpu_counts = "whole_node"
 ```
 
 The walltimes probed are not a setting: they are the distinct time limits of the
-partitions you can use, which is where routing changes, and `e` overrides them for a
-session.
+partitions you can use, which is where routing changes, and `Edit request` overrides
+them for a session.
 
 ### Whole nodes
 
-Tick "Whole node" in the request editor (`e`) to probe whole nodes: every command then
+Tick "Whole node" in the request editor (`Edit request`) to probe whole nodes: every command then
 asks for `--exclusive --mem=0` (every CPU and all the memory) instead of `-c`/`--mem`,
 and the GPU rows are each type's full node, such as `8x h100` or `4x l40s`. Untick it
 to go back to the CPUs and memory in the editor.
@@ -223,7 +234,7 @@ values. The estimates panel then notes "GPUs by whole node".
 
 ### Email notifications
 
-The `[mail]` table in your config (`C`) adds `--mail-type` and `--mail-user` to every
+The `[mail]` table in your config (`Config`) adds `--mail-type` and `--mail-user` to every
 command, so a job you submit from one emails you when it starts, ends or fails:
 
 ```toml
@@ -234,12 +245,12 @@ type = "BEGIN,END,FAIL"       # any of sbatch's --mail-type values
 
 Only the commands to submit carry them: probes leave them out, since email does not
 change when a job would start. Remove the table to leave email out, or clear the
-address for a session with `e`.
+address for a session with `Edit request`.
 
 ### Hourly email
 
-Press `M` in the dashboard to email the report now and every hour until you quit
-`slurmtop` (or press `M` again). Each email covers the cluster you are on and every
+Click `Email: off` in the dashboard to email the report now and every hour until you
+quit `slurmtop` (or click `Email: on` to stop). Each email covers the cluster you are on and every
 remote tab you have opened, with each tab's current request. Every email has the subject
 `slurmtop` and replies to the first one, so your mail client keeps them in one
 conversation instead of separate emails. Each starts with your job counts and what
@@ -252,7 +263,7 @@ killarney: 1 running, 2 pending. Since 14:00:
   6290112 (eval) submitted (Priority), expected to start 10-17 09:30
 ```
 
-The server is read from `[smtp]` in your config (`C`) when you press `M`:
+The server is read from `[smtp]` in your config (`Config`) when you turn it on:
 
 ```toml
 [smtp]
@@ -263,8 +274,9 @@ password = "..."
 recipient = "you@example.org"    # default: user in [mail]
 ```
 
-The top bar shows when the next email goes out (`next email 16:37`), and marks it
-`(last failed)` if one could not be sent. The thread and the jobs last reported are kept
+The bottom bar says whether the hourly email is on (`Email: on`) or off (`Email: off`).
+While it is on, the top bar shows when the next email goes out (`next email 16:37`),
+and marks it `(last failed)` if one could not be sent. The thread and the jobs last reported are kept
 in `~/.local/state/slurmtop/mail.json`, so the next run of the dashboard continues the
 same conversation; delete the file to start a new one. Gmail starts a new conversation
 after 100 emails, about every four days.

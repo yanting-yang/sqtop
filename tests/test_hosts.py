@@ -111,9 +111,6 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("BatchMode=yes", command)
         self.assertEqual(command[-2], "fir")
         self.assertEqual(shlex.split(command[-1]), ["sh", "-c", "echo hi"])
-        self.assertNotIn(
-            "BatchMode=yes", self.remote().ssh_command("true", batch=False)
-        )
 
     @patch.object(hosts.subprocess, "run")
     def test_runs_a_batch_in_one_session(self, run):
@@ -146,25 +143,6 @@ class RemoteTests(unittest.TestCase):
 
         with self.assertRaisesRegex(hosts.ConnectionLost, "Permission denied"):
             self.remote().run_batch([["scontrol", "show", "node"]])
-
-    @patch.object(hosts.subprocess, "run")
-    def test_checks_the_connection_without_prompting(self, run):
-        run.return_value = completed(stderr="Permission denied.", returncode=255)
-        remote = self.remote()
-
-        self.assertEqual(remote.check(), "Permission denied.")
-        run.return_value = completed()
-        self.assertIsNone(remote.check())
-
-    @patch.object(hosts.subprocess, "run")
-    def test_logs_in_on_the_terminal(self, run):
-        run.return_value = completed()
-        remote = self.remote()
-
-        self.assertTrue(remote.login())
-        args, kwargs = run.call_args
-        self.assertNotIn("BatchMode=yes", args[0])
-        self.assertNotIn("stdin", kwargs)
 
     @patch.object(hosts.subprocess, "run")
     def test_submits_on_the_cluster(self, run):

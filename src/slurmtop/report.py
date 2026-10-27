@@ -267,6 +267,7 @@ def print_cluster(cluster, settings, out=None):
             f"{cluster.name}: cannot connect over ssh ({cluster.host.ssh}): {error}",
             file=out,
         )
+        print(hosts.connect_hint(cluster.host.ssh), file=out)
         print(file=out)
         return None
 

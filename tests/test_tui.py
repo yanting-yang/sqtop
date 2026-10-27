@@ -1,4 +1,3 @@
-import contextlib
 import dataclasses
 import io
 import smtplib
@@ -10,6 +9,7 @@ from unittest.mock import patch
 
 from rich.console import Console
 from textual.widgets import Input, Select, TabPane
+from textual.widgets._select import SelectOverlay
 
 from fakes import FakeHost
 from slurmtop import hosts, probes, profiles, snapshot, tui
@@ -105,6 +105,34 @@ class TuiTestCase(unittest.IsolatedAsyncioTestCase):
         row, column = hits[nth]
         # Inside the border and one column of padding, on the text's second cell.
         await pilot.click(self.view.detail, offset=(column + 3, row + 1))
+        await pilot.pause()
+
+    def actions(self):
+        """The action bar's text."""
+        return str(self.app.action_bar.content)
+
+    async def click_action(self, pilot, label):
+        """Click `label` in the action bar."""
+        column = self.actions().index(label)
+        # After one column of padding, on the label's second cell.
+        await pilot.click(self.app.action_bar, offset=(column + 2, 0))
+        await pilot.pause()
+
+    async def click_row(self, pilot, table_id, row):
+        """Click a row of a table, below its border and header."""
+        await self.click_cell(pilot, table_id, row, 0)
+
+    async def click_cell(self, pilot, table_id, row, column):
+        """Click a cell of a table, below its border and header."""
+        table = self.table(table_id)
+        columns = list(table.columns.values())[:column]
+        x = 1 + sum(c.get_render_width(table) for c in columns) + 2
+        await pilot.click(table, offset=(x, row + 2))
+        await pilot.pause()
+
+    async def focus(self, pilot, table_id):
+        """Give a table focus, as clicking into it does."""
+        self.table(table_id).focus()
         await pilot.pause()
 
     def last_probe(self):
@@ -206,7 +234,7 @@ class DashboardTests(TuiTestCase):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
             self.view.collector.snap.jobs = jobs
-            await pilot.press("r")
+            await self.click_action(pilot, "Refresh")
             await self.settle(pilot)
 
             table = self.table("jobs")
@@ -253,16 +281,14 @@ class DashboardTests(TuiTestCase):
                 ],
             )
 
-            await pilot.press("4", "down")
-            await pilot.pause()
+            await self.click_row(pilot, "jobs", 1)
             self.assertIn("starts 2026-10-15 06:00 planned on kn134", self.detail())
             self.assertEqual(
                 self.detail_rows("Attach"),
                 ["$ srun --jobid=102 --overlap --pty bash  (once it starts)  Copy"],
             )
             self.assertEqual(self.detail_rows("Release"), ["$ scancel 102  Copy"])
-            await pilot.press("up")
-            await pilot.pause()
+            await self.click_row(pilot, "jobs", 0)
             self.assertEqual(
                 self.detail_rows("Attach"),
                 ["$ srun --jobid=101 --overlap --pty bash  Copy"],
@@ -275,8 +301,7 @@ class DashboardTests(TuiTestCase):
     async def test_shows_the_probe_its_reply_and_the_run_command(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
-            await pilot.press("3")
-            await pilot.pause()
+            await self.focus(pilot, "estimates")
 
             command, output = self.detail_rows("Probe")
             self.assertTrue(
@@ -304,20 +329,25 @@ class DashboardTests(TuiTestCase):
             self.assertIn("--account=guests", self.last_probe())
             self.assertEqual(self.table("estimates").row_count, 2)
 
-    async def test_selecting_a_scope_row_probes_it(self):
+    async def test_a_second_click_on_a_scope_row_probes_it(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
-            await pilot.press("2", "home", "enter")
+            # The first click on a row only highlights it, showing its details...
+            await self.click_row(pilot, "scopes", 1)
+            await self.click_row(pilot, "scopes", 0)
             await self.settle(pilot)
-
-            self.assertEqual(self.view.scope.label, "guests/limited")
+            self.assertEqual(self.view.scope.label, "lab/normal")
             self.assertIn("running jobs", self.detail())
+
+            # ...and a click on the highlighted row probes with it.
+            await self.click_row(pilot, "scopes", 0)
+            await self.settle(pilot)
+            self.assertEqual(self.view.scope.label, "guests/limited")
 
     async def test_edits_the_request(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
-            await pilot.press("e")
-            await pilot.pause()
+            await self.click_action(pilot, "Edit request")
             self.app.screen.query_one("#cpus", Input).value = "8"
             self.app.screen.query_one("#walltimes", Input).value = "2h"
             self.app.screen.query_one("#extra", Input).value = "--partition=gpu"
@@ -334,21 +364,16 @@ class DashboardTests(TuiTestCase):
     async def test_keeps_updating_while_the_request_dialog_is_open(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
-            await pilot.press("e")
-            await pilot.pause()
+            await self.click_action(pilot, "Edit request")
             self.app.update_status()
             self.app.refresh_visible()
             self.view.start_probes()
             await self.settle(pilot)
             self.assertIsInstance(self.app.screen, tui.RequestScreen)
-            self.assertFalse(self.app.check_action("submit", ()))
-            self.assertFalse(self.app.check_action("edit_config", ()))
 
-            await pilot.press("escape")
+            await pilot.click("#cancel")
             await pilot.pause()
             self.assertNotIsInstance(self.app.screen, tui.RequestScreen)
-            self.assertTrue(self.app.check_action("submit", ()))
-            self.assertTrue(self.app.check_action("edit_config", ()))
             self.assertEqual(self.table("estimates").row_count, 4)
 
     async def test_adds_email_to_commands_and_lets_the_request_drop_it(self):
@@ -360,12 +385,10 @@ class DashboardTests(TuiTestCase):
             # Probes leave email out; only the command to submit has it.
             self.assertNotIn("--mail-user=me@example.com", self.last_probe())
             self.assertNotIn("email", self.table("estimates").border_subtitle)
-            await pilot.press("3")
-            await pilot.pause()
+            await self.focus(pilot, "estimates")
             self.assertIn("--mail-user=me@example.com", self.detail_rows("Submit")[0])
 
-            await pilot.press("e")
-            await pilot.pause()
+            await self.click_action(pilot, "Edit request")
             mail = self.app.screen.query_one("#mail", Input)
             self.assertEqual(mail.value, "me@example.com")
             mail.value = ""
@@ -377,27 +400,10 @@ class DashboardTests(TuiTestCase):
                 "--mail-user=me@example.com", self.view.grid.results[0, 0].command
             )
 
-    async def test_moves_through_the_dialog_with_the_keyboard(self):
-        async with self.app.run_test(size=(150, 44)) as pilot:
-            await self.settle(pilot)
-            await pilot.press("e")
-            await pilot.pause()
-            self.assertEqual(self.app.focused.id, "whole-node")
-
-            # Whole node disables CPUs and memory, so Tab skips them.
-            await pilot.press("space", "tab")
-            self.assertEqual(self.app.focused.id, "walltimes")
-            await pilot.press("tab", "tab", "tab", "tab", "enter")
-            await self.settle(pilot)
-
-            self.assertNotIsInstance(self.app.screen, tui.RequestScreen)
-            self.assertTrue(self.view.settings.whole_node)
-
     async def test_requests_a_whole_node_from_the_dialog(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
-            await pilot.press("e")
-            await pilot.pause()
+            await self.click_action(pilot, "Edit request")
             await pilot.click("#whole-node")
             await pilot.pause()
             self.assertTrue(self.app.screen.query_one("#cpus", Input).disabled)
@@ -418,8 +424,7 @@ class DashboardTests(TuiTestCase):
             self.assertIn("whole node", self.table("estimates").border_subtitle)
 
             # The dialog remembers the choice and can switch it back off.
-            await pilot.press("e")
-            await pilot.pause()
+            await self.click_action(pilot, "Edit request")
             self.assertTrue(self.app.screen.query_one("#whole-node").value)
             await pilot.click("#whole-node")
             await pilot.click("#apply")
@@ -434,8 +439,7 @@ class DashboardTests(TuiTestCase):
         )
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
-            await pilot.press("3")
-            await pilot.pause()
+            await self.focus(pilot, "estimates")
 
             self.assertIn("GPUs by whole node", self.table("estimates").border_subtitle)
             self.assertIn(
@@ -445,8 +449,7 @@ class DashboardTests(TuiTestCase):
     async def test_rejects_an_invalid_request(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
-            await pilot.press("e")
-            await pilot.pause()
+            await self.click_action(pilot, "Edit request")
             self.app.screen.query_one("#walltimes", Input).value = "soon"
             await pilot.click("#apply")
             await pilot.pause()
@@ -499,8 +502,7 @@ class DashboardTests(TuiTestCase):
     async def test_copies_the_selected_command(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
-            await pilot.press("3")
-            await pilot.pause()
+            await self.focus(pilot, "estimates")
             result = self.view.grid.results[0, 0]
             with patch.object(self.app, "copy_to_clipboard") as copy:
                 await self.click_detail(pilot, "Copy", 0)
@@ -534,10 +536,9 @@ class DashboardTests(TuiTestCase):
                     "tres": "N/A",
                 }
             ]
-            await pilot.press("r")
+            await self.click_action(pilot, "Refresh")
             await self.settle(pilot)
-            await pilot.press("4")
-            await pilot.pause()
+            await self.click_row(pilot, "jobs", 0)
 
             with patch.object(self.app, "copy_to_clipboard") as copy:
                 await self.click_detail(pilot, "Copy", 0)
@@ -553,7 +554,7 @@ class DashboardTests(TuiTestCase):
             self.assertEqual(dialog.question, "Release job 101 (train) on here?")
             self.assertEqual(dialog.command, "$ scancel 101")
             self.assertEqual(self.app.focused.id, "confirm-cancel")
-            await pilot.press("escape")
+            await pilot.click("#confirm-cancel")
             await self.settle(pilot)
             self.assertEqual(self.here.acted, [])
 
@@ -580,7 +581,7 @@ class DashboardTests(TuiTestCase):
             await self.settle(pilot)
             self.view.collector.fail = ZeroDivisionError()
             with patch.object(self.view, "notify") as notify:
-                await pilot.press("r")
+                await self.click_action(pilot, "Refresh")
                 await self.settle(pilot)
 
             self.assertTrue(self.app.is_running)
@@ -633,61 +634,28 @@ class ClusterTabTests(TuiTestCase):
             await self.settle(pilot)
             self.assertEqual(self.contacted, [None, "fir.example.org"])
 
-    async def test_logs_in_when_an_opened_remote_tab_needs_it(self):
-        self.fir.lost = "Permission denied."
-        logins = []
-
-        def login():
-            logins.append(True)
-            self.fir.lost = None
-            return True
-
-        self.fir.login = login
+    async def test_explains_how_to_connect_a_remote_tab_without_prompting(self):
+        self.fir.lost = "Permission denied (keyboard-interactive)."
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
-            with (
-                patch.object(self.app, "suspend", contextlib.nullcontext),
-                contextlib.redirect_stdout(io.StringIO()) as terminal,
-            ):
+            with patch.object(self.app, "suspend") as suspend:
                 await self.open_tab(pilot, 1)
                 await self.settle(pilot)
                 await self.settle(pilot)
 
-            self.assertEqual(logins, [True])
-            self.assertIn("logging in to fir", terminal.getvalue())
+            suspend.assert_not_called()
+            self.assertIn("Cannot reach fir over ssh", self.detail())
+            self.assertIn("Permission denied", self.detail())
+            self.assertIn("`ssh fir.example.org` in another terminal", self.detail())
+            self.assertIn("not connected", str(self.view.status.content))
+
+            # Once the user has connected elsewhere, r picks the tab up.
+            self.fir.lost = None
+            await self.click_action(pilot, "Refresh")
+            await self.settle(pilot)
+            await self.settle(pilot)
             self.assertIsNone(self.view.error)
             self.assertEqual(self.table("partitions").row_count, 2)
-            self.assertTrue(self.table("partitions").has_focus)
-
-    async def test_explains_a_failed_login_and_offers_another(self):
-        self.fir.lost = "Permission denied (keyboard-interactive)."
-        logins = []
-        self.fir.login = lambda: logins.append(True) or False
-        async with self.app.run_test(size=(150, 44)) as pilot:
-            await self.settle(pilot)
-            with (
-                patch.object(self.app, "suspend", contextlib.nullcontext),
-                contextlib.redirect_stdout(io.StringIO()),
-            ):
-                await self.open_tab(pilot, 1)
-                await self.settle(pilot)
-                await self.settle(pilot)
-
-                self.assertEqual(logins, [True])
-                self.assertIn("Cannot reach fir over ssh", self.detail())
-                self.assertIn("Permission denied", self.detail())
-                self.assertIn("not connected", str(self.view.status.content))
-                self.assertTrue(self.view.check_action("login", ()))
-                self.assertFalse(self.app.views[0].check_action("login", ()))
-
-                # A refresh that fails again does not prompt by itself...
-                self.view.refresh_snapshot()
-                await self.settle(pilot)
-                self.assertEqual(logins, [True])
-                # ...but l does.
-                await pilot.press("l")
-                await self.settle(pilot)
-                self.assertEqual(logins, [True, True])
 
 
 class SubmitTests(TuiTestCase):
@@ -695,10 +663,10 @@ class SubmitTests(TuiTestCase):
         """Click the Submit label in Details."""
         await self.click_detail(pilot, "Submit")
 
-    async def open_dialog(self, pilot, *keys):
+    async def open_dialog(self, pilot, row=0):
+        """Click an estimate in the first walltime column, then Submit."""
         await self.settle(pilot)
-        await pilot.press("3", *keys)
-        await pilot.pause()
+        await self.click_cell(pilot, "estimates", row, 1)
         await self.click_submit(pilot)
 
     async def test_submits_a_batch_job_once_confirmed(self):
@@ -707,7 +675,7 @@ class SubmitTests(TuiTestCase):
             dialog = self.app.screen
             self.assertIsInstance(dialog, tui.ConfirmScreen)
             self.assertTrue(dialog.command.startswith("$ sbatch --gres=gpu:l40s:1 "))
-            # Enter on a fresh dialog cancels; submitting is a deliberate click.
+            # Cancel has focus; submitting is a deliberate click.
             self.assertEqual(self.app.focused.id, "confirm-cancel")
 
             with patch.object(self.app, "notify") as notify:
@@ -722,13 +690,7 @@ class SubmitTests(TuiTestCase):
     async def test_submits_nothing_when_cancelled(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.open_dialog(pilot)
-            await pilot.press("enter")
-            await pilot.pause()
-            self.assertNotIsInstance(self.app.screen, tui.ConfirmScreen)
-
-            await self.click_submit(pilot)
-            self.assertIsInstance(self.app.screen, tui.ConfirmScreen)
-            await pilot.press("escape")
+            await pilot.click("#confirm-cancel")
             await self.settle(pilot)
 
             self.assertNotIsInstance(self.app.screen, tui.ConfirmScreen)
@@ -737,7 +699,7 @@ class SubmitTests(TuiTestCase):
     async def test_refuses_a_request_slurm_rejected(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
             with patch.object(self.app, "notify") as notify:
-                await self.open_dialog(pilot, "down", "down")
+                await self.open_dialog(pilot, row=2)
 
             self.assertNotIsInstance(self.app.screen, tui.ConfirmScreen)
             self.assertIn(
@@ -761,8 +723,7 @@ class SubmitTests(TuiTestCase):
             await self.settle(pilot)
             self.app.action_toggle_command()
             await self.settle(pilot)
-            await pilot.press("3")
-            await pilot.pause()
+            await self.focus(pilot, "estimates")
 
             self.assertIn("--pty bash", self.detail_rows("Submit")[0])
             self.assertIn("run it in a terminal", self.detail_rows("Submit")[-1])
@@ -809,30 +770,33 @@ class MailTests(TuiTestCase):
     async def test_emails_now_and_hourly_until_turned_off(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
+            self.assertIn("Email: off", self.actions())
             with patch.object(self.app, "notify") as notify:
-                await pilot.press("M")
+                await self.click_action(pilot, "Email: off")
                 await self.settle(pilot)
 
                 self.assertEqual(self.sent, [[("here", 4)]])
                 self.assertIn("Emailed you@example.org.", self.messages(notify))
                 self.assertIn("next email", str(self.view.status.content))
+                self.assertIn("Email: on", self.actions())
 
                 self.app.send_mail()  # what the hourly timer calls
                 await self.settle(pilot)
                 self.assertEqual(len(self.sent), 2)
 
-                await pilot.press("M")
+                await self.click_action(pilot, "Email: on")
                 await self.settle(pilot)
 
             self.assertIsNone(self.app.mail_timer)
             self.assertIn("Hourly email off.", self.messages(notify))
             self.assertNotIn("next email", str(self.view.status.content))
+            self.assertIn("Email: off", self.actions())
             self.load_smtp.assert_called_once_with()
 
     async def test_adds_remote_tabs_once_opened_with_their_request(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
-            await pilot.press("M")
+            await self.click_action(pilot, "Email: off")
             await self.settle(pilot)
             await self.open_tab(pilot, 1)
             await self.settle(pilot)
@@ -848,16 +812,17 @@ class MailTests(TuiTestCase):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
             with patch.object(self.app, "notify") as notify:
-                await pilot.press("M")
+                await self.click_action(pilot, "Email: off")
                 await self.settle(pilot)
 
             self.assertIn("Add an [smtp] table", self.messages(notify)[0])
             self.assertIsNone(self.app.mail_timer)
+            self.assertIn("Email: off", self.actions())
             self.assertEqual(self.sent, [])
 
             self.load_smtp.side_effect = ValueError("[smtp]: port must be a number")
             with patch.object(self.app, "notify") as notify:
-                await pilot.press("M")
+                await self.click_action(pilot, "Email: off")
             self.assertIn("port must be a number", self.messages(notify)[0])
             self.assertIsNone(self.app.mail_timer)
 
@@ -866,7 +831,7 @@ class MailTests(TuiTestCase):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
             with patch.object(self.app, "notify") as notify:
-                await pilot.press("M")
+                await self.click_action(pilot, "Email: off")
                 await self.settle(pilot)
 
             self.assertIn(
@@ -907,8 +872,7 @@ class ConfigTests(TuiTestCase):
             self.addCleanup(patcher.stop)
 
     async def open_form(self, pilot):
-        await pilot.press("C")
-        await pilot.pause()
+        await self.click_action(pilot, "Config")
         self.assertIsInstance(self.app.screen, tui.ConfigScreen)
         return self.app.screen
 
@@ -960,7 +924,6 @@ class ConfigTests(TuiTestCase):
             await self.settle(pilot)
             form = await self.open_form(pilot)
 
-            self.assertFalse(self.app.check_action("submit", ()))
             self.assertIn(str(self.path), str(form.query_one("#config-path").content))
             self.assertTrue(form.query_one("#mail-user").has_focus)
             self.assertEqual(form.field("mail", "user"), "")
@@ -971,7 +934,7 @@ class ConfigTests(TuiTestCase):
                 [("fir", {"ssh": "fir.example.org"})],
             )
 
-            await pilot.press("escape")
+            await pilot.click("#config-cancel")
             await pilot.pause()
             self.assertNotIsInstance(self.app.screen, tui.ConfigScreen)
             self.assertEqual(self.path.read_text(), FIR)
@@ -1002,9 +965,10 @@ class ConfigTests(TuiTestCase):
             blank = await self.add_row(pilot)
             self.assertIsNone(blank.values())
 
-            # Picking from the list with the keyboard.
-            select.focus()
-            await pilot.press("enter", "down", "down", "enter")
+            # Picking from the list with the mouse: open it, click the third.
+            await pilot.click(select)
+            await pilot.pause()
+            await pilot.click(select.query_one(SelectOverlay), offset=(2, 2))
             await pilot.pause()
             self.assertEqual(select.value, "whole_node")
             self.assertEqual(
@@ -1019,9 +983,8 @@ class ConfigTests(TuiTestCase):
             await self.remove_row(pilot, self.rows()[0])
             await self.add_row(pilot, name="x", ssh="x.example.org")
 
-            # Enter in a field saves, like the button.
             with patch.object(self.app, "notify") as notify:
-                await pilot.press("enter")
+                await pilot.click("#config-save")
                 await self.settle(pilot)
             messages = [call.args[0] for call in notify.call_args_list]
 
@@ -1200,7 +1163,7 @@ class ConfigTests(TuiTestCase):
                     "recipient": "you@example.org",
                 },
             )
-            await pilot.press("M")
+            await self.click_action(pilot, "Email: off")
             await self.settle(pilot)
             self.assertEqual(self.app.smtp.server, "a.example.org")
 
@@ -1273,7 +1236,7 @@ class ConfigTests(TuiTestCase):
                 self.form_error(), "a cluster needs a name (ClusterName in scontrol)"
             )
 
-            await pilot.press("escape")
+            await pilot.click("#config-cancel")
             await pilot.pause()
             self.assertNotIsInstance(self.app.screen, tui.ConfigScreen)
             self.assertEqual(self.path.read_text(), FIR)

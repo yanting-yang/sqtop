@@ -46,35 +46,6 @@ class FindClustersTests(unittest.TestCase):
         self.assertEqual([c.name for c in clusters], ["fir"])
 
 
-class ConnectTests(unittest.TestCase):
-    def remote(self, name, error):
-        host = Mock(ssh=f"{name}.example.org")
-        host.check.return_value = error
-        host.login.return_value = True
-        return snapshot.Cluster(name, profiles.Profile(name), host)
-
-    def test_logs_in_only_where_a_prompt_is_needed(self):
-        ready = self.remote("fir", None)
-        needs_mfa = self.remote("tamia", "Permission denied (keyboard-interactive).")
-        stderr = StringIO()
-        with (
-            patch.object(cli.sys.stdin, "isatty", return_value=True),
-            redirect_stderr(stderr),
-        ):
-            cli.connect([ready, needs_mfa])
-
-        ready.host.login.assert_not_called()
-        needs_mfa.host.login.assert_called_once_with()
-        self.assertIn("connecting to tamia", stderr.getvalue())
-
-    def test_never_prompts_without_a_terminal(self):
-        needs_mfa = self.remote("tamia", "Permission denied.")
-        with patch.object(cli.sys.stdin, "isatty", return_value=False):
-            cli.connect([needs_mfa])
-
-        needs_mfa.host.login.assert_not_called()
-
-
 class MainTests(unittest.TestCase):
     def setUp(self):
         self.clusters = [
@@ -82,7 +53,6 @@ class MainTests(unittest.TestCase):
         ]
         for target, name, value in [
             (cli, "find_clusters", self.clusters),
-            (cli, "connect", None),
             (cli.report, "print_reports", None),
             (profiles, "load_mail", None),
         ]:
@@ -94,7 +64,6 @@ class MainTests(unittest.TestCase):
         with patch.object(cli.sys.stdout, "isatty", return_value=False):
             cli.main([])
 
-        self.connect.assert_called_once_with(self.clusters)
         self.print_reports.assert_called_once_with(self.clusters, probes.Settings())
 
     def test_reports_only_this_cluster_when_there_is_one(self):
@@ -111,7 +80,6 @@ class MainTests(unittest.TestCase):
         with patch.object(cli.sys.stdout, "isatty", return_value=False):
             cli.main([])
 
-        self.connect.assert_called_once_with([remote])
         self.print_reports.assert_called_once_with([remote], probes.Settings())
 
     def test_adds_email_notification_from_the_config(self):
@@ -137,7 +105,6 @@ class MainTests(unittest.TestCase):
 
         self.print_reports.assert_not_called()
         # Remote clusters are contacted when their tab opens, not up front.
-        self.connect.assert_not_called()
         app_class.assert_called_once_with(self.clusters, probes.Settings())
         app.run.assert_called_once_with()
 
@@ -163,7 +130,7 @@ class MainTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 0)
         text = " ".join(stdout.getvalue().split())
         self.assertIn(profiles.short_path(profiles.CONFIG_PATH), text)
-        self.assertIn("C edits that config", text)
+        self.assertIn("Config edits that config", text)
 
     def test_exits_with_a_message_for_a_broken_config(self):
         self.find_clusters.side_effect = ValueError("bad setting")

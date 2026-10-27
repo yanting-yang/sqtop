@@ -2,7 +2,6 @@
 
 import argparse
 import sys
-from concurrent.futures import ThreadPoolExecutor
 
 from . import hosts, probes, profiles, report, slurm, snapshot
 
@@ -28,43 +27,18 @@ def find_clusters():
     return clusters
 
 
-def connect(clusters):
-    """Make sure each remote cluster in a text report answers ssh.
-
-    Connections are checked in parallel. When one needs a password or MFA and
-    there is a terminal, ssh asks for it here; the control master it opens is
-    reused for every later command. (The dashboard logs in when a remote tab
-    is opened instead.)
-    """
-    remotes = [cluster for cluster in clusters if cluster.host.ssh]
-    if not remotes:
-        return
-    with ThreadPoolExecutor(len(remotes)) as pool:
-        errors = list(pool.map(lambda cluster: cluster.host.check(), remotes))
-    for cluster, error in zip(remotes, errors):
-        if error is None or not sys.stdin.isatty():
-            continue
-        print(
-            f"slurmtop: connecting to {cluster.name} ({cluster.host.ssh}); "
-            "ssh may ask for your password or MFA.",
-            file=sys.stderr,
-        )
-        if not cluster.host.login():
-            print(f"slurmtop: could not connect to {cluster.name}.", file=sys.stderr)
-
-
 def main(argv=None):
     # No options: clusters are detected and configured in the config, which
-    # C edits in the dashboard, where the probe request and hourly email are
-    # set too. Parsing still rejects stray arguments and serves --help.
+    # Config edits in the dashboard, where the probe request and hourly email
+    # are set too. Parsing still rejects stray arguments and serves --help.
     config = profiles.short_path(profiles.CONFIG_PATH)
     argparse.ArgumentParser(
         prog="slurmtop",
         description=(
             "Partitions, account/QOS limits and estimated start times for the "
             "Slurm cluster you are logged in to; clusters with an ssh host in "
-            f"{config} get a tab that connects when opened, C edits that "
-            "config, and M emails the dashboard hourly through its [smtp]. "
+            f"{config} get a tab that connects when opened, Config edits that "
+            "config, and Email sends the dashboard hourly through its [smtp]. "
             "Prints a text report of this cluster when output is not a terminal."
         ),
     ).parse_args(argv)
@@ -87,7 +61,6 @@ def main(argv=None):
         # Like the dashboard at startup, the report covers the cluster this
         # runs on; remote ones only when Slurm is not available here.
         reported = [c for c in clusters if c.host.ssh is None] or clusters
-        connect(reported)
         report.print_reports(reported, settings)
         return
 

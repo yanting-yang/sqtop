@@ -6,9 +6,11 @@ is first reached over ssh (see `hosts`) when its tab is opened. The visible
 view collects data on a background thread every `REFRESH_SECONDS`, and probes
 run on their own worker, filling the estimates grid as replies arrive.
 
-`M` turns on the hourly email (`mailer`) of the clusters shown so far; it
-stops when the dashboard exits. `C` opens the config form (`ConfigScreen`),
-which saves the config file and applies it.
+Everything is a click; slurmtop binds no keys. The action bar at the bottom
+refreshes, re-probes, edits the request, turns the hourly email (`mailer`) of
+the clusters shown so far on or off (it stops when the dashboard exits), opens
+the config form (`ConfigScreen`, which saves the config file and applies it)
+and quits.
 """
 
 import dataclasses
@@ -24,14 +26,12 @@ from rich.table import Table
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
-from textual.binding import Binding
 from textual.containers import Container, Grid, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     Checkbox,
     DataTable,
-    Footer,
     Input,
     Label,
     Select,
@@ -141,8 +141,6 @@ class Dashboard(Grid):
 class RequestScreen(ModalScreen):
     """Edit the resources every probe asks for."""
 
-    BINDINGS = [Binding("escape", "dismiss", "Cancel")]
-
     def __init__(self, settings):
         super().__init__()
         self.settings = settings
@@ -195,7 +193,6 @@ class RequestScreen(ModalScreen):
         for field in ("#cpus", "#mem"):
             self.query_one(field, Input).disabled = event.value
 
-    @on(Input.Submitted)
     @on(Button.Pressed, "#apply")
     def apply(self):
         try:
@@ -276,7 +273,6 @@ class ConfigScreen(ModalScreen):
     loads.
     """
 
-    BINDINGS = [Binding("escape", "dismiss(False)", "Cancel")]
     MAIL_FIELDS = ("user", "type")
     SMTP_FIELDS = ("server", "port", "sender", "password", "recipient")
 
@@ -393,7 +389,6 @@ class ConfigScreen(ModalScreen):
             config["clusters"] = clusters
         return config
 
-    @on(Input.Submitted)
     @on(Button.Pressed, "#config-save")
     def save(self):
         try:
@@ -411,8 +406,7 @@ class ConfirmScreen(ModalScreen):
     job): the exact command and what happens next. Dismisses with True to go
     ahead."""
 
-    BINDINGS = [Binding("escape", "dismiss(False)", "Cancel")]
-    # Enter on a fresh dialog cancels; going ahead takes a deliberate choice.
+    # Cancel has focus, so going ahead always takes a deliberate click.
     AUTO_FOCUS = "#confirm-cancel"
 
     def __init__(self, question, command, note, verb):
@@ -444,20 +438,9 @@ class ClusterView(Vertical):
     """One cluster's dashboard: identity line, four panels and details.
 
     The view owns its cluster's state (snapshot, probe request, grid), so
-    each tab keeps its own selection and request. Its key bindings apply
-    while focus is inside it.
+    each tab keeps its own selection and request. The app's action bar runs
+    its actions on the visible tab.
     """
-
-    BINDINGS = [
-        Binding("r", "refresh", "Refresh"),
-        Binding("p", "probe", "Re-probe"),
-        Binding("e", "edit_request", "Edit request"),
-        Binding("l", "login", "Log in"),
-        Binding("1", "focus_table('partitions')", show=False),
-        Binding("2", "focus_table('scopes')", show=False),
-        Binding("3", "focus_table('estimates')", show=False),
-        Binding("4", "focus_table('jobs')", show=False),
-    ]
 
     def __init__(self, cluster, settings, pane_id, **kwargs):
         super().__init__(**kwargs)
@@ -479,12 +462,8 @@ class ClusterView(Vertical):
         self.detail_from = "partitions"
         # True from starting a collection until its outcome is shown. Kept
         # here rather than read from the worker, which is still winding down
-        # when its outcome arrives, so a refresh asked for then (say, right
-        # after logging in) is not dropped.
+        # when its outcome arrives, so a refresh asked for then is not dropped.
         self.collecting = False
-        # Set when the tab is opened: if that first refresh cannot connect,
-        # ssh gets the terminal to ask for a password or MFA.
-        self.login_on_failure = False
 
     # --- Layout --------------------------------------------------------------
 
@@ -570,7 +549,6 @@ class ClusterView(Vertical):
         # The pane is shown on the next refresh; a hidden table cannot take focus.
         self.app.call_after_refresh(self.focus_main)
         if self.stale or self.error is not None:
-            self.login_on_failure = bool(self.host.ssh)
             self.refresh_snapshot()
         elif self.probes_stale:
             self.start_probes()
@@ -639,25 +617,18 @@ class ClusterView(Vertical):
         self.query_one("#identity", Static).update(self.identity())
 
     def disconnected(self, message):
-        """Show why ssh failed; the last data, if any, stays on screen.
-
-        Right after the tab is opened, ssh then gets the terminal to log in.
-        """
+        """Show why ssh failed; the last data, if any, stays on screen."""
         self.collecting = False
         self.error = message
         self.loaded()
         self.update_status()
         self.show_detail()
-        if self.login_on_failure:
-            self.login_on_failure = False
-            self.call_after_refresh(self.action_login)
 
     def apply_snapshot(self, snap):
         first = self.snap is None
         self.collecting = False
         self.snap = snap
         self.error = None
-        self.login_on_failure = False
         self.fill_partitions()
         self.fill_hardware()
         self.fill_jobs()
@@ -773,7 +744,7 @@ class ClusterView(Vertical):
             )
         table = self.tables["scopes"]
         self.refill(table, rows)
-        table.border_subtitle = "* left out of commands"
+        table.border_subtitle = "* left out of commands · click a row twice: probe"
 
     def fill_jobs(self):
         table = self.tables["jobs"]
@@ -863,7 +834,7 @@ class ClusterView(Vertical):
         notes = ["whole node"] if settings.whole_node else []
         if grid.gpus_by_node:
             notes.append("GPUs by whole node")
-        # Clicking the command switches sbatch/srun, as m does.
+        # Clicking the command switches sbatch/srun.
         toggle = Style(underline=True, meta={"@click": "app.toggle_command"})
         subtitle = Text()
         subtitle.append(settings.command, toggle)
@@ -938,6 +909,7 @@ class ClusterView(Vertical):
         if event.data_table.id == self.detail_from:
             self.show_detail()
 
+    # A click on the highlighted row selects it (the first click highlights).
     @on(DataTable.RowSelected, "#scopes")
     def scope_selected(self, event):
         index = int(event.row_key.value)
@@ -976,9 +948,7 @@ class ClusterView(Vertical):
             title,
             Text(self.error),
             Text(
-                "Press l to log in (ssh asks for your password or MFA in this "
-                "terminal), then the connection is reused for every refresh.",
-                style="dim",
+                f"{hosts.connect_hint(self.host.ssh)} Then click Refresh.", style="dim"
             ),
         )
 
@@ -1202,12 +1172,6 @@ class ClusterView(Vertical):
 
     # --- Actions -------------------------------------------------------------
 
-    def check_action(self, action, parameters):
-        """Logging in only applies to clusters reached over ssh."""
-        if action == "login":
-            return self.host.ssh is not None
-        return True
-
     def action_refresh(self):
         self.probed_at = None
         self.refresh_snapshot()
@@ -1376,37 +1340,16 @@ class ClusterView(Vertical):
         hardware.display = showing
         (hardware if showing else partitions).focus()
 
-    def action_focus_table(self, table_id):
-        if table_id == "partitions" and not self.tables["partitions"].display:
-            table_id = "hardware"
-        self.tables[table_id].focus()
-
-    def action_login(self):
-        """Hand the terminal to ssh so it can ask for a password or MFA."""
-        try:
-            with self.app.suspend():
-                print(
-                    f"slurmtop: logging in to {self.cluster.name} "
-                    f"({self.host.ssh}); the dashboard returns afterwards."
-                )
-                connected = self.host.login()
-        except Exception as error:  # SuspendNotSupported, e.g. in a web terminal
-            self.notify(f"Cannot log in from here: {error!r}", severity="error")
-            return
-        if not connected:
-            self.notify(f"Could not connect to {self.cluster.name}.", severity="error")
-            return
-        self.action_refresh()
-
-
 class SlurmtopApp(App):
     TITLE = "slurmtop"
-    # The footer lists every key; the command palette would only add themes.
+    # Every control is a click (the action bar, titles and links); the command
+    # palette would only add themes.
     ENABLE_COMMAND_PALETTE = False
     CSS = """
     TabbedContent, ContentSwitcher, TabPane, ClusterView { height: 1fr; }
     TabPane { padding: 0; }
     #topbar { height: 1; background: $panel; padding: 0 1; }
+    #actions { dock: bottom; height: 1; background: $panel; padding: 0 1; }
     #identity { width: 1fr; }
     #status { width: auto; color: $text-muted; }
     #dashboard {
@@ -1493,12 +1436,6 @@ class SlurmtopApp(App):
     #config-buttons Button { margin-left: 1; }
     #config-add { margin-right: 4; }
     """
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("M", "toggle_mail", "Email"),
-        Binding("C", "edit_config", "Config"),
-        Binding("question_mark", "toggle_help", "Keys"),
-    ]
 
     def __init__(self, clusters, settings):
         super().__init__()
@@ -1519,12 +1456,13 @@ class SlurmtopApp(App):
             for index, cluster in enumerate(self.clusters):
                 with TabPane(cluster.name, id=f"cluster-{index}"):
                     yield ClusterView(cluster, self.settings, f"cluster-{index}")
-        yield Footer()
+        yield Static(self.actions(), id="actions")
 
     def on_mount(self):
         # App.query_one searches the screen on top, which is the request dialog
         # while it is open, so keep direct references to the dashboard widgets.
         self.tabs = self.query_one(TabbedContent)
+        self.action_bar = self.query_one("#actions", Static)
         self.views = list(self.query(ClusterView))
         self.set_interval(REFRESH_SECONDS, self.refresh_visible)
         self.set_interval(1, self.update_status)
@@ -1553,16 +1491,40 @@ class SlurmtopApp(App):
         if getattr(self, "views", None):
             self.view.activate()
 
-    def check_action(self, action, parameters):
-        """Keep a dialog from starting another job action under itself.
+    def actions(self):
+        """The action bar: a click on a label runs its action, which acts on
+        the visible tab for the first three. The email label says whether the
+        hourly email is on, and a click flips it."""
+        on = self.mail_timer is not None
+        controls = [
+            ("Refresh", "app.refresh", None),
+            ("Re-probe", "app.probe", None),
+            ("Edit request", "app.edit_request", None),
+            (f"Email: {'on' if on else 'off'}", ("app.set_mail", (not on,)), on),
+            ("Config", "app.edit_config", None),
+            ("Quit", "app.quit", None),
+        ]
+        text = Text()
+        for label, action, highlight in controls:
+            if text:
+                text.append("   ")
+            style = Style(underline=True, meta={"@click": action})
+            if highlight:
+                style += Style(color="green")
+            text.append(label, style)
+        return text
 
-        Textual's own app actions (moving focus with Tab) must keep working
-        in the dialog.
-        """
-        if action in ("submit", "release_job", "edit_config"):
-            dialogs = (RequestScreen, ConfirmScreen, ConfigScreen)
-            return not isinstance(self.screen, dialogs)
-        return True
+    def update_actions(self):
+        self.action_bar.update(self.actions())
+
+    def action_refresh(self):
+        self.view.action_refresh()
+
+    def action_probe(self):
+        self.view.action_probe()
+
+    def action_edit_request(self):
+        self.view.action_edit_request()
 
     def action_submit(self):
         """Submit from the visible tab, as its Submit label does when clicked."""
@@ -1592,9 +1554,9 @@ class SlurmtopApp(App):
         """Release a job of the visible tab (a click on Release in its details)."""
         self.view.release_job(job_id)
 
-    def action_toggle_mail(self):
+    def action_set_mail(self, on):
         """Start the hourly email, reading `[smtp]` from the config, or stop it."""
-        if self.mail_timer is not None:
+        if not on:
             self.stop_mail()
             return
         try:
@@ -1604,11 +1566,12 @@ class SlurmtopApp(App):
             return
         if self.smtp is None:
             self.notify(
-                "Add an [smtp] table to your config (C) to email hourly.",
+                "Add an [smtp] table to your config (Config) to email hourly.",
                 severity="warning",
             )
             return
         self.mail_timer = self.set_interval(mailer.INTERVAL, self.send_mail)
+        self.update_actions()
         self.notify(f"Emailing {self.smtp.recipient} now and hourly until you quit.")
         self.send_mail()
 
@@ -1649,6 +1612,7 @@ class SlurmtopApp(App):
     def stop_mail(self):
         self.mail_timer.stop()
         self.mail_timer = self.mail_next = self.mail_error = None
+        self.update_actions()
         self.notify("Hourly email off.")
         self.update_status()
 
@@ -1701,7 +1665,7 @@ class SlurmtopApp(App):
         changes = []
 
         # Only a changed [mail] table reaches the tabs, so an address edited
-        # for the session (e) survives other edits.
+        # for the session (Edit request) survives other edits.
         mail_fields = {
             "mail_user": mail and mail[0],
             "mail_type": mail[1] if mail else probes.Settings().mail_type,
@@ -1770,9 +1734,3 @@ class SlurmtopApp(App):
             mounted = [v for v in self.views if v.parent is not None]
             self.tabs.active = (mounted or self.views)[0].pane_id
         self.tabs.remove_pane(view.pane_id)
-
-    def action_toggle_help(self):
-        if self.screen.query("HelpPanel"):
-            self.action_hide_help_panel()
-        else:
-            self.action_show_help_panel()

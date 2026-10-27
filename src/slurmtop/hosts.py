@@ -3,11 +3,11 @@
 Starting an ssh session on a cluster login node can take seconds (shell
 start-up files, MFA-guarded sshd) while the Slurm commands themselves are
 quick, so a `Remote` runs a whole refresh in one session, and streams a whole
-probe grid through another. Sessions reuse an ssh control master, so a login
-that needs a password or MFA is needed once, not per command.
+probe grid through another. Sessions reuse an ssh control master.
 
-Every command runs without the terminal, except `login`, which the
-dashboard calls under `App.suspend()`.
+Every command runs without the terminal and never prompts: slurmtop does not
+log in for the user. A cluster that needs a password or MFA is reached through
+a control master the user opened with `ssh` in a terminal of their own.
 """
 
 import os
@@ -29,6 +29,15 @@ CONTROL_PERSIST = "10m"
 
 class ConnectionLost(Exception):
     """ssh could not reach the cluster; the message is ssh's own."""
+
+
+def connect_hint(ssh):
+    """How the user gets `ssh` connected, shown with a `ConnectionLost`."""
+    return (
+        "slurmtop never asks for a password or MFA: log in with "
+        f"`ssh {ssh}` in another terminal, with ControlMaster set for it in "
+        "~/.ssh/config so slurmtop can share that connection."
+    )
 
 
 def _run(args, timeout):
@@ -127,11 +136,10 @@ class Remote:
             self._control = options
         return self._control
 
-    def ssh_command(self, script, batch=True):
-        """ssh running `script` with sh, never allocating a terminal."""
+    def ssh_command(self, script):
+        """ssh running `script` with sh, never allocating a terminal or prompting."""
         options = [*self.control_options(), "-T", "-o", "ConnectTimeout=15"]
-        if batch:
-            options += ["-o", "BatchMode=yes", "-o", "LogLevel=ERROR"]
+        options += ["-o", "BatchMode=yes", "-o", "LogLevel=ERROR"]
         return ["ssh", *options, self.ssh, shlex.join(["sh", "-c", script])]
 
     def _prelude(self, login_path=False):
@@ -144,21 +152,6 @@ class Remote:
         if self.path:
             return f"PATH={shlex.quote(self.path)}; export PATH\n"
         return ""
-
-    def check(self):
-        """Return None when a non-interactive session works, else ssh's error."""
-        code, _, stderr = _run(self.ssh_command("true"), 30)
-        if code == 0:
-            return None
-        return stderr.strip() or f"ssh exited with status {code}"
-
-    def login(self):
-        """Open a control master interactively, so ssh can ask for a password
-        or MFA on the terminal. Returns True once connected."""
-        try:
-            return subprocess.run(self.ssh_command("true", batch=False)).returncode == 0
-        except (FileNotFoundError, KeyboardInterrupt):
-            return False
 
     def run(self, args, timeout=60):
         return self.run_batch([args], timeout)[0]

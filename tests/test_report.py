@@ -213,6 +213,7 @@ class ReportsTests(unittest.TestCase):
         self.assertIn("me@login · here · Slurm 25", text)
         self.assertIn("=" * 80, text)
         self.assertIn("fir: cannot connect over ssh (fir): Permission denied", text)
+        self.assertIn("log in with `ssh fir` in another terminal", text)
 
     def test_returns_the_snapshot_of_a_reported_cluster(self):
         cluster = snapshot.Cluster("here", profiles.Profile("here"), FakeHost())
