@@ -3,7 +3,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from unittest.mock import Mock, patch
 
-from slurmtop import cli, hosts, probes, profiles, snapshot
+from sqtop import cli, hosts, probes, profiles, snapshot
 
 
 def profile_tables(**tables):
@@ -87,7 +87,7 @@ class MainTests(unittest.TestCase):
         app = Mock()
         with (
             patch.object(cli.sys.stdout, "isatty", return_value=True),
-            patch("slurmtop.tui.SlurmtopApp", return_value=app) as app_class,
+            patch("sqtop.tui.SqtopApp", return_value=app) as app_class,
         ):
             cli.main([])
 
@@ -99,7 +99,7 @@ class MainTests(unittest.TestCase):
         app = Mock()
         with (
             patch.object(cli.sys.stdout, "isatty", return_value=True),
-            patch("slurmtop.tui.SlurmtopApp", return_value=app) as app_class,
+            patch("sqtop.tui.SqtopApp", return_value=app) as app_class,
         ):
             cli.main([])
 

@@ -7,7 +7,7 @@ elsewhere.
 
 Profiles live in the config file with the email settings (`[mail]` for
 Slurm's job emails, `[smtp]` for the dashboard's hourly email): your own
-`~/.config/slurmtop/config.toml`, which the dashboard's config form (`C`)
+`~/.config/sqtop/config.toml`, which the dashboard's config form (`Config`)
 writes after checking the same rules (`check_config`, `save_config`).
 Without it there are no profiles and no email.
 """
@@ -43,7 +43,7 @@ MAIL_TYPES = frozenset(
 # dashboard's config form writes it; without it there are no settings at all.
 CONFIG_PATH = (
     Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    / "slurmtop"
+    / "sqtop"
     / "config.toml"
 )
 SMTP_PORT = 587
@@ -91,8 +91,8 @@ def dump_config(config):
     written; `[mail]` and `[smtp]` come first, then one table per cluster.
     """
     lines = [
-        "# Settings for slurmtop, written by its config form (C). Each setting",
-        "# is explained in the README under Configuration.",
+        "# Settings for sqtop, written by its config form (Config). Each",
+        "# setting is explained in the README under Configuration.",
     ]
     tables = [(name, config[name]) for name in ("mail", "smtp") if name in config]
     tables += [

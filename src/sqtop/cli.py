@@ -1,4 +1,4 @@
-"""Entry point for `slurmtop`: the dashboard, or a one-shot text report."""
+"""Entry point for `sqtop`: the dashboard, or a one-shot text report."""
 
 import argparse
 import sys
@@ -33,7 +33,7 @@ def main(argv=None):
     # are set too. Parsing still rejects stray arguments and serves --help.
     config = profiles.short_path(profiles.CONFIG_PATH)
     argparse.ArgumentParser(
-        prog="slurmtop",
+        prog="sqtop",
         description=(
             "Partitions, account/QOS limits and estimated start times for the "
             "Slurm cluster you are logged in to; clusters with an ssh host in "
@@ -47,10 +47,10 @@ def main(argv=None):
         clusters = find_clusters()
         mail = profiles.load_mail()
     except ValueError as error:
-        sys.exit(f"slurmtop: {profiles.short_path(profiles.CONFIG_PATH)}: {error}")
+        sys.exit(f"sqtop: {profiles.short_path(profiles.CONFIG_PATH)}: {error}")
     if not clusters:
         sys.exit(
-            "slurmtop: Slurm is not available here ('scontrol' failed), and no "
+            "sqtop: Slurm is not available here ('scontrol' failed), and no "
             f"cluster in {config} has an ssh host."
         )
     settings = probes.Settings()
@@ -65,9 +65,9 @@ def main(argv=None):
         return
 
     # Textual is only imported for the dashboard, keeping the report fast.
-    from .tui import SlurmtopApp
+    from .tui import SqtopApp
 
-    SlurmtopApp(clusters, settings).run()
+    SqtopApp(clusters, settings).run()
 
 
 if __name__ == "__main__":

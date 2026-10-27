@@ -12,7 +12,7 @@ from textual.widgets import Input, Select, TabPane
 from textual.widgets._select import SelectOverlay
 
 from fakes import FakeHost
-from slurmtop import hosts, probes, profiles, snapshot, tui
+from sqtop import hosts, probes, profiles, snapshot, tui
 
 from test_report import fake_probe, make_snapshot
 
@@ -57,7 +57,7 @@ class TuiTestCase(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(patcher.stop)
         self.here = FakeHost(probe=fake_probe)
         self.fir = FakeHost(probe=fake_probe, ssh="fir.example.org")
-        self.app = tui.SlurmtopApp(
+        self.app = tui.SqtopApp(
             [
                 snapshot.Cluster("here", profiles.Profile("here"), self.here),
                 snapshot.Cluster("fir", profiles.Profile("fir"), self.fir),
@@ -377,7 +377,7 @@ class DashboardTests(TuiTestCase):
             self.assertEqual(self.table("estimates").row_count, 4)
 
     async def test_adds_email_to_commands_and_lets_the_request_drop_it(self):
-        self.app = tui.SlurmtopApp(
+        self.app = tui.SqtopApp(
             self.app.clusters, probes.Settings(mail_user="me@example.com")
         )
         async with self.app.run_test(size=(150, 44)) as pilot:
@@ -434,7 +434,7 @@ class DashboardTests(TuiTestCase):
 
     async def test_asks_for_whole_gpu_nodes_where_gpus_go_by_node(self):
         whole = profiles.Profile("here", gpu_counts="whole_node")
-        self.app = tui.SlurmtopApp(
+        self.app = tui.SqtopApp(
             [snapshot.Cluster("here", whole, self.here)], probes.Settings()
         )
         async with self.app.run_test(size=(150, 44)) as pilot:
@@ -737,7 +737,7 @@ class SubmitTests(TuiTestCase):
     async def test_has_no_keys_for_submitting_or_switching_commands(self):
         keys = {binding.key for binding in tui.ClusterView.BINDINGS}
         self.assertFalse(keys & {"s", "m", "n", "c", "a"})
-        app_keys = {binding.key for binding in tui.SlurmtopApp.BINDINGS}
+        app_keys = {binding.key for binding in tui.SqtopApp.BINDINGS}
         self.assertFalse(app_keys & {"right_square_bracket", "left_square_bracket"})
 
 
@@ -855,7 +855,7 @@ class ConfigTests(TuiTestCase):
         await super().asyncSetUp()
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.path = Path(directory.name) / "slurmtop" / "config.toml"
+        self.path = Path(directory.name) / "sqtop" / "config.toml"
         self.path.parent.mkdir()
         self.path.write_text(FIR)
 

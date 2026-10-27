@@ -2,8 +2,8 @@
 
 Each email starts with your job counts and what happened to your jobs since
 the previous email (submitted, started, ended), then has the report
-`slurmtop` prints when output is not a terminal. Every email has the
-subject "slurmtop" and refers to the first one, so mail clients keep them
+`sqtop` prints when output is not a terminal. Every email has the
+subject "sqtop" and refers to the first one, so mail clients keep them
 in one conversation rather than as separate emails.
 
 The server comes from `[smtp]` in the config (`profiles.load_smtp`). The
@@ -24,13 +24,13 @@ from pathlib import Path
 
 from . import hosts, report, slurm, views
 
-SUBJECT = "slurmtop"
+SUBJECT = "sqtop"
 INTERVAL = 3600
 SSL_PORT = 465
 SMTP_TIMEOUT = 60
 STATE_PATH = (
     Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
-    / "slurmtop"
+    / "sqtop"
     / "mail.json"
 )
 

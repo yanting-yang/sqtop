@@ -1,6 +1,6 @@
 """A stand-in for `hosts.Local`/`hosts.Remote` that answers from canned text."""
 
-from slurmtop import hosts
+from sqtop import hosts
 
 
 def scheduler_reply(start=None, partition="gpu", error="error: rejected"):

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from slurmtop import profiles
+from sqtop import profiles
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -28,7 +28,7 @@ class ProfileTests(unittest.TestCase):
     def test_reads_your_config_from_your_config_directory(self):
         config_home = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
         self.assertEqual(
-            self.default_path, Path(config_home) / "slurmtop" / "config.toml"
+            self.default_path, Path(config_home) / "sqtop" / "config.toml"
         )
         mine = Path(self.config('[mail]\nuser = "me@example.com"\n'))
         with patch.object(profiles, "CONFIG_PATH", mine):
@@ -51,14 +51,14 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(tomllib.loads(text), config)
         self.assertIn('\n[clusters.rcl]\ngpu_counts = "all"\n', text)
         self.assertIn('[clusters."my cluster"]', text)
-        self.assertTrue(text.startswith("# Settings for slurmtop"))
+        self.assertTrue(text.startswith("# Settings for sqtop"))
         self.assertEqual(profiles.dump_config({}).count("["), 0)
         with self.assertRaises(ValueError):
             profiles.dump_config({"mail": {"user": 1.5}})
 
     def test_saves_your_config_privately(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "slurmtop" / "config.toml"
+            path = Path(directory) / "sqtop" / "config.toml"
             with patch.object(profiles, "CONFIG_PATH", path):
                 profiles.save_config({"mail": {"user": "me@example.com"}})
 

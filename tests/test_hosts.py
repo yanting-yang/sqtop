@@ -4,7 +4,7 @@ import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
-from slurmtop import hosts
+from sqtop import hosts
 
 
 def completed(stdout="", stderr="", returncode=0):

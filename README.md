@@ -1,4 +1,4 @@
-# slurmtop
+# sqtop
 
 A terminal dashboard for Slurm, in the spirit of
 [hunoutl/slurmtop](https://github.com/hunoutl/slurmtop) and
@@ -38,18 +38,18 @@ it runs.
 
 ## Requirements
 
-- Python 3.12 and [uv](https://docs.astral.sh/uv/)
+- [uv](https://docs.astral.sh/uv/) (it fetches Python 3.13 if you do not have it)
 - A Slurm login node (`scontrol` and `squeue` on `PATH`; estimates need `sbatch`/`srun`)
 
 ## Usage
 
 ```bash
-# Without cloning
-uvx git+https://github.com/yanting-yang/slurmtop
+uvx sqtop                  # run it from PyPI: one tab per cluster, this one first
+uvx sqtop > report.txt     # text report of this cluster when not a terminal
+uv tool install sqtop      # or install it once, then just type `sqtop`
 
 # From a checkout
-uv run slurmtop                # one tab per cluster: this one, then remote ones
-uv run slurmtop > report.txt   # text report of this cluster when not a terminal
+uv run sqtop
 ```
 
 There are no options. The first tab is the cluster you are logged in to (from
@@ -74,8 +74,8 @@ Remote tabs run Slurm on the cluster's login node through `ssh`, with your
 `~/.ssh/config` (aliases, users, keys). Nothing is sent to a remote cluster until you
 open its tab, and only the visible tab refreshes.
 
-slurmtop never asks for a password or MFA. For a cluster that needs one, let ssh share
-connections and log in with `ssh` in another terminal first; slurmtop reuses that
+sqtop never asks for a password or MFA. For a cluster that needs one, let ssh share
+connections and log in with `ssh` in another terminal first; sqtop reuses that
 connection:
 
 ```
@@ -88,7 +88,7 @@ Host *.alliancecan.ca
 
 After `ssh fir.alliancecan.ca`, the connection stays open for 4 hours after your last
 session there closes. With keys that log in without a prompt, nothing is needed:
-slurmtop opens its own shared connection, which closes 10 minutes after the last use.
+sqtop opens its own shared connection, which closes 10 minutes after the last use.
 A tab that cannot connect shows ssh's error and how to connect; then click `Refresh`.
 
 The text report printed when output is not a terminal covers the cluster you are on;
@@ -101,7 +101,7 @@ with its host as the prompt (`fir.alliancecan.ca$ sbatch ...`): run them there.
 
 ### Mouse
 
-slurmtop has no keyboard shortcuts: everything is a click. The bar at the bottom holds
+sqtop has no keyboard shortcuts: everything is a click. The bar at the bottom holds
 the dashboard's actions, and each dialog closes with its own buttons.
 
 | Click | Action |
@@ -171,8 +171,8 @@ the dashboard's actions, and each dialog closes with its own buttons.
 
 ## Configuration
 
-All settings live in one file, `~/.config/slurmtop/config.toml`
-(`$XDG_CONFIG_HOME/slurmtop/config.toml` if you set that): email (`[mail]`, `[smtp]`)
+All settings live in one file, `~/.config/sqtop/config.toml`
+(`$XDG_CONFIG_HOME/sqtop/config.toml` if you set that): email (`[mail]`, `[smtp]`)
 and cluster profiles (`[clusters.<name>]`). Click `Config` in the dashboard to edit it
 in a form: the job email address and states, the hourly email's server, port, sender,
 password and recipient, and one row per cluster (name, GPU counts picked from `pow2`,
@@ -183,7 +183,7 @@ applies what changed without a restart: clusters added get tabs and removed ones
 theirs, changed profiles and `[mail]` settings are probed again, and the hourly email
 switches to a changed `[smtp]`.
 
-Without the file, `slurmtop` shows only the cluster you are logged in to, with no email
+Without the file, `sqtop` shows only the cluster you are logged in to, with no email
 settings. The file is plain TOML, so you can also edit it by hand; the form rewrites it
 without comments.
 
@@ -250,9 +250,9 @@ address for a session with `Edit request`.
 ### Hourly email
 
 Click `Email: off` in the dashboard to email the report now and every hour until you
-quit `slurmtop` (or click `Email: on` to stop). Each email covers the cluster you are on and every
+quit `sqtop` (or click `Email: on` to stop). Each email covers the cluster you are on and every
 remote tab you have opened, with each tab's current request. Every email has the subject
-`slurmtop` and replies to the first one, so your mail client keeps them in one
+`sqtop` and replies to the first one, so your mail client keeps them in one
 conversation instead of separate emails. Each starts with your job counts and what
 happened since the previous email, followed by the text report:
 
@@ -277,14 +277,14 @@ recipient = "you@example.org"    # default: user in [mail]
 The bottom bar says whether the hourly email is on (`Email: on`) or off (`Email: off`).
 While it is on, the top bar shows when the next email goes out (`next email 16:37`),
 and marks it `(last failed)` if one could not be sent. The thread and the jobs last reported are kept
-in `~/.local/state/slurmtop/mail.json`, so the next run of the dashboard continues the
+in `~/.local/state/sqtop/mail.json`, so the next run of the dashboard continues the
 same conversation; delete the file to start a new one. Gmail starts a new conversation
 after 100 emails, about every four days.
 
 ### When `sacctmgr` fails
 
 On some login nodes `sacctmgr` fails with "Connection refused" because `slurmdbd` runs
-on the controller. Accounting is still enforced: `slurmtop` reads limits from
+on the controller. Accounting is still enforced: `sqtop` reads limits from
 `scontrol show assoc_mgr` instead. Without `sacctmgr` it cannot list your QOS
 assignments, so it test-submits each cached account/QOS pair and hides the ones Slurm
 rejects.

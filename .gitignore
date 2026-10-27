@@ -9,7 +9,7 @@ wheels/
 # Virtual environments
 .venv
 
-# slurmtop's config lives in ~/.config/slurmtop now; a copy left here
+# sqtop's config lives in ~/.config/sqtop now; a copy left here
 # would hold your SMTP password
 config.toml
 .env

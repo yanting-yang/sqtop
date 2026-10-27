@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from fakes import FakeHost
 
-from slurmtop import mailer, probes, profiles, snapshot
+from sqtop import mailer, probes, profiles, snapshot
 
 from test_report import make_snapshot
 
@@ -44,8 +44,8 @@ class ComposeTests(unittest.TestCase):
     def test_sends_the_report_under_one_subject_as_text_and_html(self):
         message = mailer.compose(SMTP, "a | b <c>\n")
 
-        self.assertEqual(message["Subject"], "slurmtop")
-        self.assertEqual(message["From"], "slurmtop <me@example.org>")
+        self.assertEqual(message["Subject"], "sqtop")
+        self.assertEqual(message["From"], "sqtop <me@example.org>")
         self.assertEqual(message["To"], "you@example.org")
         self.assertTrue(message["Message-ID"].endswith("@example.org>"))
         self.assertIsNone(message["In-Reply-To"])
@@ -175,7 +175,7 @@ class SendReportTests(TempDirTestCase):
 
         self.assertIsNone(first["In-Reply-To"])
         for message in (second, third):
-            self.assertEqual(message["Subject"], "slurmtop")
+            self.assertEqual(message["Subject"], "sqtop")
             self.assertEqual(message["In-Reply-To"], first["Message-ID"])
             self.assertEqual(message["References"], first["Message-ID"])
         self.assertEqual(self.send_mail.call_count, 3)

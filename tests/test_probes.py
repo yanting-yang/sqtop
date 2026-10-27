@@ -5,9 +5,9 @@ from unittest.mock import Mock
 
 from fakes import FakeHost, scheduler_reply
 
-from slurmtop import probes, profiles, snapshot
-from slurmtop.probes import Grid, Request, Settings
-from slurmtop.snapshot import Limit, Scope
+from sqtop import probes, profiles, snapshot
+from sqtop.probes import Grid, Request, Settings
+from sqtop.snapshot import Limit, Scope
 
 GENERIC = profiles.Profile()
 

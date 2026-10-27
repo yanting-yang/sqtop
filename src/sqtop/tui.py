@@ -6,7 +6,7 @@ is first reached over ssh (see `hosts`) when its tab is opened. The visible
 view collects data on a background thread every `REFRESH_SECONDS`, and probes
 run on their own worker, filling the estimates grid as replies arrive.
 
-Everything is a click; slurmtop binds no keys. The action bar at the bottom
+Everything is a click; sqtop binds no keys. The action bar at the bottom
 refreshes, re-probes, edits the request, turns the hourly email (`mailer`) of
 the clusters shown so far on or off (it stops when the dashboard exits), opens
 the config form (`ConfigScreen`, which saves the config file and applies it)
@@ -126,7 +126,7 @@ class CommandLine:
 
 
 def copy_link(command):
-    """A Copy link: a click copies `command` (`SlurmtopApp.action_copy_command`)."""
+    """A Copy link: a click copies `command` (`SqtopApp.action_copy_command`)."""
     meta = {"@click": ("app.copy_command", (command,))}
     return Text("Copy", Style(color="cyan", underline=True, meta=meta))
 
@@ -445,7 +445,7 @@ class ClusterView(Vertical):
     def __init__(self, cluster, settings, pane_id, **kwargs):
         super().__init__(**kwargs)
         self.cluster = cluster
-        # The id of the tab pane holding this view (`SlurmtopApp.view`).
+        # The id of the tab pane holding this view (`SqtopApp.view`).
         self.pane_id = pane_id
         self.host = cluster.host
         self.profile = cluster.profile
@@ -1340,8 +1340,8 @@ class ClusterView(Vertical):
         hardware.display = showing
         (hardware if showing else partitions).focus()
 
-class SlurmtopApp(App):
-    TITLE = "slurmtop"
+class SqtopApp(App):
+    TITLE = "sqtop"
     # Every control is a click (the action bar, titles and links); the command
     # palette would only add themes.
     ENABLE_COMMAND_PALETTE = False

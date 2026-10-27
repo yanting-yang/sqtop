@@ -5,7 +5,7 @@ start-up files, MFA-guarded sshd) while the Slurm commands themselves are
 quick, so a `Remote` runs a whole refresh in one session, and streams a whole
 probe grid through another. Sessions reuse an ssh control master.
 
-Every command runs without the terminal and never prompts: slurmtop does not
+Every command runs without the terminal and never prompts: sqtop does not
 log in for the user. A cluster that needs a password or MFA is reached through
 a control master the user opened with `ssh` in a terminal of their own.
 """
@@ -23,7 +23,7 @@ RECORD = "\x1e"
 PROBE_WORKERS = 4
 PROBE_TIMEOUT = 30
 # Control sockets when the user's ssh config does not multiplex already.
-CONTROL_DIR = Path(tempfile.gettempdir()) / f"slurmtop-{os.getuid()}"
+CONTROL_DIR = Path(tempfile.gettempdir()) / f"sqtop-{os.getuid()}"
 CONTROL_PERSIST = "10m"
 
 
@@ -34,9 +34,9 @@ class ConnectionLost(Exception):
 def connect_hint(ssh):
     """How the user gets `ssh` connected, shown with a `ConnectionLost`."""
     return (
-        "slurmtop never asks for a password or MFA: log in with "
+        "sqtop never asks for a password or MFA: log in with "
         f"`ssh {ssh}` in another terminal, with ControlMaster set for it in "
-        "~/.ssh/config so slurmtop can share that connection."
+        "~/.ssh/config so sqtop can share that connection."
     )
 
 
