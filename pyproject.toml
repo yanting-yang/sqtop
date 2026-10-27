@@ -3,6 +3,8 @@ name = "sqtop"
 version = "0.1.0"
 description = "Slurm dashboard: partitions, account/QOS limits and estimated start times"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = "==3.13.*"
 keywords = ["slurm", "hpc", "tui", "dashboard", "squeue", "sbatch"]
 classifiers = [

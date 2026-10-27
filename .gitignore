@@ -13,3 +13,6 @@ wheels/
 # would hold your SMTP password
 config.toml
 .env
+
+# A PyPI upload token belongs in ~/.pypi-token, never in the repository
+.pypi-token

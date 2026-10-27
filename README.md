@@ -298,3 +298,7 @@ uvx ruff check src tests
 ```
 
 See [AGENTS.md](AGENTS.md) for the code layout and site-specific Slurm quirks.
+
+## License
+
+MIT; see [LICENSE](LICENSE).
