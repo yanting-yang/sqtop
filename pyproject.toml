@@ -1,6 +1,6 @@
 [project]
 name = "sqtop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Slurm dashboard: partitions, account/QOS limits and estimated start times"
 readme = "README.md"
 license = "MIT"
