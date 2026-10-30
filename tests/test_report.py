@@ -41,7 +41,7 @@ def make_snapshot(jobs=()):
 
 def fake_probe(args):
     """4 L40S never fits; 3-hour jobs start at NOW, longer ones 30 hours later."""
-    if "--gres=gpu:l40s:4" in args:
+    if "--gpus-per-node=l40s:4" in args:
         return scheduler_reply(error="error: too big.")
     hours = 0 if "-t0-03:00:00" in args else 30
     # From the clock (which the report tests pin to NOW), so waits never
@@ -72,7 +72,7 @@ class ReportTests(unittest.TestCase):
         text = self.render(make_snapshot())
 
         self.assertIn("me@login · c · Slurm 25.05", text)
-        self.assertIn("(sbatch -c4 --mem=32G), waits from", text)
+        self.assertIn("(sbatch -c32 --mem=128G), waits from", text)
         self.assertIn("Note: sacctmgr unavailable", text)
         for heading in (
             "Partitions (* default):",
@@ -112,12 +112,13 @@ class ReportTests(unittest.TestCase):
             )
 
         text = output.getvalue()
-        self.assertIn("(sbatch -c4 --mem=32G, GPU rows by whole node)", text)
+        self.assertIn("(sbatch -c32 --mem=128G, GPU rows by whole node)", text)
         self.assertIn("GPU rows ask for --exclusive --mem=0 instead of -c/--mem.", text)
         probes_run = [args for batch in host.streamed for args in batch]
-        gpu = next(args for args in probes_run if "--gres=gpu:l40s:4" in args)
+        gpu = next(args for args in probes_run if "--gpus-per-node=l40s:4" in args)
         self.assertEqual(
-            gpu[gpu.index("--gres=gpu:l40s:4") + 1 :][:2], ["--exclusive", "--mem=0"]
+            gpu[gpu.index("--gpus-per-node=l40s:4") + 1 :][:2],
+            ["--exclusive", "--mem=0"],
         )
 
     def test_lists_partition_usage(self):
@@ -147,9 +148,9 @@ class ReportTests(unittest.TestCase):
         # Rejected at every walltime, so the request is named once.
         self.assertIn("  4x l40s: too big", normal)
         self.assertIn(
-            "Probe, e.g.: sbatch --test-only --gres=gpu:l40s:1 -c4 --mem=32G "
-            '-t0-03:00:00 --wrap="sleep infinity"\n'
-            "Submit it with: sbatch --gres=gpu:l40s:1 -c4 --mem=32G -t0-03:00:00 "
+            "Probe, e.g.: sbatch --test-only --gpus-per-node=l40s:1 -c32 --mem=128G "
+            '-t0-03:00:00 --output=/dev/null --wrap="sleep infinity"\n'
+            "Submit it with: sbatch --gpus-per-node=l40s:1 -c32 --mem=128G -t0-03:00:00 "
             '--output=/dev/null --wrap="sleep infinity"\n',
             normal,
         )

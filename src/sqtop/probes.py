@@ -32,18 +32,26 @@ GENERIC_NOISE = (
 class Request:
     gpu: str | None = None
     count: int = 0
-    # How to show the GPU type; the full type still goes into --gres.
+    # How to show the GPU type; the full type still goes into --gpus-per-node.
     name: str | None = dataclasses.field(default=None, compare=False)
     # Ask for every CPU and all the memory of the node, as GPU requests do
     # where GPUs are only allocated by node (`gpu_counts = "whole_node"`).
     whole_node: bool = False
+    # Leave CPUs and memory to the site, which sizes them by GPU and may
+    # refuse --mem (`resources = "by_gpu"`).
+    by_gpu: bool = False
 
     @property
     def label(self):
         return f"{self.count}x {self.name or self.gpu}" if self.gpu else "CPU only"
 
     def directives(self):
-        return [f"--gres=gpu:{self.gpu}:{self.count}"] if self.gpu else []
+        """The GPUs on one node. `--gpus-per-node` rather than `--gres`, which
+        some submit filters refuse (Trillium GPU); "gpu" is the untyped total."""
+        if not self.gpu:
+            return []
+        gpus = self.count if self.gpu == "gpu" else f"{self.gpu}:{self.count}"
+        return [f"--gpus-per-node={gpus}"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -51,8 +59,8 @@ class Settings:
     """What every probe asks for besides its GPUs, walltime and scope."""
 
     command: str = "sbatch"
-    cpus: int = 4
-    mem: str = "32G"
+    cpus: int = 32
+    mem: str = "128G"
     # Extra options for every probe, e.g. ("--partition=x", "--constraint=y").
     extra: tuple[str, ...] = ()
     # Overrides the walltimes derived from partition limits, in minutes.
@@ -63,20 +71,22 @@ class Settings:
     # Ask for whole nodes: every CPU, all memory and every GPU on the node.
     whole_node: bool = False
 
-    def resource_directives(self, whole_node=False):
-        """CPU and memory options: the request's, or a whole node's.
+    def resource_directives(self, whole_node=False, by_gpu=False):
+        """CPU and memory options: the request's, a whole node's, or none.
 
         `whole_node` asks for the whole node for one request even when the
-        request itself does not.
+        request itself does not; `by_gpu` leaves both to the site.
         """
         if self.whole_node or whole_node:
             # --exclusive gives the job every CPU; --mem=0 all the memory.
             return ["--exclusive", "--mem=0"]
+        if by_gpu:
+            return []
         # -c is --cpus-per-task, kept short for copying.
         return [f"-c{self.cpus}", f"--mem={self.mem}"]
 
     def describe(self):
-        """The request in one line, e.g. `sbatch -c4 --mem=32G`."""
+        """The request in one line, e.g. `sbatch -c32 --mem=128G`."""
         return shlex.join([self.command, *self.resource_directives(), *self.extra])
 
     def mail_directives(self):
@@ -128,6 +138,13 @@ class Grid:
             request.whole_node for request in self.requests
         )
 
+    @property
+    def sized_by_gpu(self):
+        """Whether GPU rows leave out the request's CPUs and memory."""
+        return not self.settings.whole_node and any(
+            request.by_gpu and not request.whole_node for request in self.requests
+        )
+
     def skipped(self, column):
         return self.max_wall is not None and self.walltimes[column] > self.max_wall
 
@@ -145,7 +162,7 @@ class Grid:
         return [
             *self.scope.directives(),
             *request.directives(),
-            *self.settings.resource_directives(request.whole_node),
+            *self.settings.resource_directives(request.whole_node, request.by_gpu),
             # -t is --time, kept short for copying.
             f"-t{slurm.format_duration(self.walltimes[column])}",
         ]
@@ -205,9 +222,12 @@ def format_wait(start, now):
 
 
 def counts_for(ceiling, capacity, mode):
-    """GPU counts worth probing: powers of two to the ceiling, all, or whole node."""
+    """GPU counts worth probing: powers of two to the ceiling, all, whole node,
+    or one GPU and the whole node."""
     if mode == "whole_node":
         return [capacity]
+    if mode == "one_or_node":
+        return sorted({1, capacity})
     if mode == "all":
         return list(range(1, ceiling + 1))
     counts = []
@@ -236,16 +256,18 @@ def max_gpu_counts(capacities, limits):
     return counts
 
 
-def plan_requests(capacities, ceilings, mode="pow2", names=None):
+def plan_requests(capacities, ceilings, mode="pow2", names=None, resources="request"):
     """Requests for each GPU type up to its ceiling, then CPU only.
 
     In `whole_node` mode each GPU request asks for its whole node: all of its
-    GPUs, CPUs and memory.
+    GPUs, CPUs and memory. With `by_gpu` resources, GPU requests leave CPUs
+    and memory to the site.
     """
     names = names or {}
     whole_node = mode == "whole_node"
+    by_gpu = resources == "by_gpu"
     requests = [
-        Request(gpu, count, names.get(gpu), whole_node)
+        Request(gpu, count, names.get(gpu), whole_node, by_gpu)
         for gpu, capacity in capacities.items()
         for count in counts_for(ceilings.get(gpu, capacity), capacity, mode)
     ]
@@ -305,6 +327,7 @@ def build_grid(snap, scope, settings, profile, info):
             # A whole node means all of its GPUs, whatever the profile probes.
             "whole_node" if settings.whole_node else profile.gpu_counts,
             snap.gpu_names,
+            profile.resources,
         ),
         walltimes=plan_walltimes(usable or snap.partitions, settings.walltimes),
         max_wall=snapshot.tightest(limits, "wall"),

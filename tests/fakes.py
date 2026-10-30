@@ -28,7 +28,8 @@ class FakeHost:
         self.probe = probe or (lambda args: scheduler_reply())
         self.ssh = ssh
         self.lost = lost
-        self.path = None
+        self.env = {}
+        self.workdir = None
         self.batches = []
         self.streamed = []
         self.act_reply = (0, "Submitted batch job 77")

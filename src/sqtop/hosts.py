@@ -25,6 +25,12 @@ PROBE_TIMEOUT = 30
 # Control sockets when the user's ssh config does not multiplex already.
 CONTROL_DIR = Path(tempfile.gettempdir()) / f"sqtop-{os.getuid()}"
 CONTROL_PERSIST = "10m"
+# Read from the cluster's login shell, which may load Slurm as a module: where
+# its programs are and, where the module sets it, its config (Killarney's
+# `SLURM_CONF`), exported for every command; and `SCRATCH`, where commands
+# run, since some sites refuse jobs submitted from /home (Killarney).
+LOGIN_ENV = ("PATH", "SLURM_CONF")
+LOGIN_WORKDIR = "SCRATCH"
 
 
 class ConnectionLost(Exception):
@@ -107,17 +113,40 @@ class Local:
                 on_result(futures[future], code, _combined(stdout, stderr))
 
 
+def login_prelude():
+    """Script lines taking `LOGIN_ENV` and `LOGIN_WORKDIR` from a login shell.
+
+    A login shell sets them up the way an interactive user sees them. Each
+    value is marked (`sqtop:NAME=value`), since login scripts may print.
+    """
+    names = " ".join((*LOGIN_ENV, LOGIN_WORKDIR))
+    report = f'for v in {names}; do printf "sqtop:%s=%s\\n" "$v" "${{!v-}}"; done'
+    lines = [
+        f"e=$(bash -lc '{report}' </dev/null 2>/dev/null)",
+        'from_login() { printf "%s\\n" "$e" | sed -n "s/^sqtop:$1=//p"; }',
+    ]
+    for name in LOGIN_ENV:
+        lines.append(
+            f'v=$(from_login {name}); [ -n "$v" ] && {{ {name}=$v; export {name}; }}'
+        )
+    lines.append(f'v=$(from_login {LOGIN_WORKDIR}); [ -n "$v" ] && cd "$v" 2>/dev/null')
+    return "\n".join(lines) + "\n"
+
+
 class Remote:
     """Run commands on a cluster's login node through `ssh <destination>`.
 
     `destination` is anything ssh accepts, such as a `~/.ssh/config` alias.
-    Commands run with the login shell's PATH (read by `detect_commands`),
-    since non-login sessions often lack Slurm's directory.
+    Commands run with the login shell's Slurm environment (`LOGIN_ENV`) in
+    its scratch directory, which `ClusterInfo.detect` records in `env` and
+    `workdir`, since non-login sessions often lack Slurm's directory and
+    config and start in $HOME.
     """
 
     def __init__(self, ssh):
         self.ssh = ssh
-        self.path = None
+        self.env = {}
+        self.workdir = None
         self._control = None
 
     def control_options(self):
@@ -144,14 +173,14 @@ class Remote:
 
     def _prelude(self, login_path=False):
         if login_path:
-            # A login shell sets up PATH the way an interactive user sees it.
-            return (
-                "p=$(bash -lc 'printf %s \"$PATH\"' </dev/null 2>/dev/null)"
-                ' && [ -n "$p" ] && PATH=$p; export PATH\n'
-            )
-        if self.path:
-            return f"PATH={shlex.quote(self.path)}; export PATH\n"
-        return ""
+            return login_prelude()
+        lines = [
+            f"{name}={shlex.quote(value)}; export {name}\n"
+            for name, value in self.env.items()
+        ]
+        if self.workdir:
+            lines.append(f"cd {shlex.quote(self.workdir)} 2>/dev/null\n")
+        return "".join(lines)
 
     def run(self, args, timeout=60):
         return self.run_batch([args], timeout)[0]

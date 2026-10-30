@@ -305,12 +305,12 @@ class DashboardTests(TuiTestCase):
 
             command, output = self.detail_rows("Probe")
             self.assertTrue(
-                command.startswith("$ sbatch --test-only --gres=gpu:l40s:1 ")
+                command.startswith("$ sbatch --test-only --gpus-per-node=l40s:1 ")
             )
             self.assertTrue(command.endswith('--wrap="sleep infinity"  Copy'))
             self.assertIn("sbatch: Job 1 to start at", output)
             (command,) = self.detail_rows("Submit")
-            self.assertTrue(command.startswith("$ sbatch --gres=gpu:l40s:1 "))
+            self.assertTrue(command.startswith("$ sbatch --gpus-per-node=l40s:1 "))
             self.assertTrue(command.endswith("  Copy"))
             self.assertIn("Estimated start", self.detail())
 
@@ -357,9 +357,9 @@ class DashboardTests(TuiTestCase):
             self.assertEqual(self.view.settings.cpus, 8)
             self.assertEqual(self.view.grid.walltimes, [120])
             self.assertIn("-c8", self.last_probe())
-            self.assertEqual(self.last_probe()[-2], "--partition=gpu")
+            self.assertEqual(self.last_probe()[-3], "--partition=gpu")
             # Each cluster keeps its own request.
-            self.assertEqual(self.app.views[1].settings.cpus, 4)
+            self.assertEqual(self.app.views[1].settings.cpus, 32)
 
     async def test_keeps_updating_while_the_request_dialog_is_open(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
@@ -430,7 +430,7 @@ class DashboardTests(TuiTestCase):
             await pilot.click("#apply")
             await self.settle(pilot)
             self.assertFalse(self.view.settings.whole_node)
-            self.assertIn("-c4", self.last_probe())
+            self.assertIn("-c32", self.last_probe())
 
     async def test_asks_for_whole_gpu_nodes_where_gpus_go_by_node(self):
         whole = profiles.Profile("here", gpu_counts="whole_node")
@@ -443,7 +443,23 @@ class DashboardTests(TuiTestCase):
 
             self.assertIn("GPUs by whole node", self.table("estimates").border_subtitle)
             self.assertIn(
-                "--gres=gpu:l40s:4 --exclusive --mem=0 ", self.detail_rows("Submit")[0]
+                "--gpus-per-node=l40s:4 --exclusive --mem=0 ",
+                self.detail_rows("Submit")[0],
+            )
+
+    async def test_leaves_cpus_and_memory_to_a_site_that_sizes_them_by_gpu(self):
+        by_gpu = profiles.Profile("here", resources="by_gpu")
+        self.app = tui.SqtopApp(
+            [snapshot.Cluster("here", by_gpu, self.here)], probes.Settings()
+        )
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.settle(pilot)
+            await self.focus(pilot, "estimates")
+
+            subtitle = str(self.table("estimates").border_subtitle)
+            self.assertIn("GPU rows: CPUs and memory by GPU", subtitle)
+            self.assertIn(
+                "--gpus-per-node=l40s:1 -t0-03:00:00 ", self.detail_rows("Submit")[0]
             )
 
     async def test_rejects_an_invalid_request(self):
@@ -481,7 +497,7 @@ class DashboardTests(TuiTestCase):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
             table = self.table("estimates")
-            plain = "sbatch -c4 --mem=32G"
+            plain = "sbatch -c32 --mem=128G"
             self.assertEqual(table._border_subtitle.plain, plain)
 
             # The subtitle ends two cells before the corner: "… ─╯".
@@ -674,7 +690,9 @@ class SubmitTests(TuiTestCase):
             await self.open_dialog(pilot)
             dialog = self.app.screen
             self.assertIsInstance(dialog, tui.ConfirmScreen)
-            self.assertTrue(dialog.command.startswith("$ sbatch --gres=gpu:l40s:1 "))
+            self.assertTrue(
+                dialog.command.startswith("$ sbatch --gpus-per-node=l40s:1 ")
+            )
             # Cancel has focus; submitting is a deliberate click.
             self.assertEqual(self.app.focused.id, "confirm-cancel")
 
@@ -775,7 +793,7 @@ class MailTests(TuiTestCase):
                 await self.click_action(pilot, "Email: off")
                 await self.settle(pilot)
 
-                self.assertEqual(self.sent, [[("here", 4)]])
+                self.assertEqual(self.sent, [[("here", 32)]])
                 self.assertIn("Emailed you@example.org.", self.messages(notify))
                 self.assertIn("next email", str(self.view.status.content))
                 self.assertIn("Email: on", self.actions())
@@ -805,7 +823,7 @@ class MailTests(TuiTestCase):
             self.app.send_mail()
             await self.settle(pilot)
 
-            self.assertEqual(self.sent, [[("here", 4)], [("here", 4), ("fir", 8)]])
+            self.assertEqual(self.sent, [[("here", 32)], [("here", 32), ("fir", 8)]])
 
     async def test_explains_how_to_set_it_up(self):
         self.load_smtp.return_value = None
@@ -885,7 +903,7 @@ class ConfigTests(TuiTestCase):
     @staticmethod
     def fill_row(row, **fields):
         for name, value in fields.items():
-            kind = Select if name == "gpu_counts" else Input
+            kind = Select if name in ("gpu_counts", "resources") else Input
             row.query_one(f".{name.replace('_', '-')}", kind).value = value
 
     async def add_row(self, pilot, **fields):
@@ -949,7 +967,7 @@ class ConfigTests(TuiTestCase):
             self.assertFalse(self.path.exists())
             self.assertEqual(self.tab_names(), ["here", "fir"])
 
-    async def test_offers_only_the_gpu_count_modes(self):
+    async def test_offers_only_the_modes_the_loader_accepts(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
             await self.open_form(pilot)
@@ -957,9 +975,15 @@ class ConfigTests(TuiTestCase):
             select = row.query_one(".gpu-counts", Select)
 
             self.assertEqual(
-                [value for _, value in select._options], ["pow2", "all", "whole_node"]
+                [value for _, value in select._options],
+                ["pow2", "all", "whole_node", "one_or_node"],
             )
             self.assertEqual(select.value, "pow2")
+            resources = row.query_one(".resources", Select)
+            self.assertEqual(
+                [value for _, value in resources._options], ["request", "by_gpu"]
+            )
+            self.assertEqual(resources.value, "request")
             # The default is not written; an empty row with it is no row.
             self.assertEqual(row.values(), ("fir", {"ssh": "fir.example.org"}))
             blank = await self.add_row(pilot)
@@ -975,6 +999,21 @@ class ConfigTests(TuiTestCase):
                 row.values(),
                 ("fir", {"gpu_counts": "whole_node", "ssh": "fir.example.org"}),
             )
+            self.fill_row(row, resources="by_gpu")
+            self.assertEqual(
+                row.values(),
+                (
+                    "fir",
+                    {
+                        "gpu_counts": "whole_node",
+                        "resources": "by_gpu",
+                        "ssh": "fir.example.org",
+                    },
+                ),
+            )
+            # A rule alone makes a row, which then needs a name.
+            self.fill_row(blank, resources="by_gpu")
+            self.assertEqual(blank.values(), ("", {"resources": "by_gpu"}))
 
     async def test_saves_the_file_privately_and_reloads_it(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
@@ -1097,6 +1136,16 @@ class ConfigTests(TuiTestCase):
             identity = self.view.query_one("#identity").content
             self.assertNotIn("profile here", str(identity))
 
+            # The CPU/memory rule alone is a change too, probed again.
+            probed = len(self.here.streamed)
+            await self.open_form(pilot)
+            await self.add_row(pilot, name="here", resources="by_gpu")
+            messages = await self.save(pilot)
+            self.assertEqual(messages, [f"Saved {self.path}. Reloaded: here profile."])
+            self.assertEqual(self.view.profile.resources, "by_gpu")
+            self.assertEqual(len(self.here.streamed), probed + 1)
+            self.assertNotIn("-c32", self.last_probe())
+
     async def test_applies_a_changed_mail_table_to_every_tab(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
@@ -1196,6 +1245,47 @@ class ConfigTests(TuiTestCase):
             )
             self.assertNotIn("smtp", self.saved())
             self.assertIsNone(self.app.mail_timer)
+
+    async def test_opens_on_the_form_without_a_cluster(self):
+        # No Slurm here and no config: nothing to show until a cluster is added.
+        self.path.unlink()
+        self.app = tui.SqtopApp([], probes.Settings())
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.settle(pilot)
+
+            self.assertIsInstance(self.app.screen, tui.ConfigScreen)
+            self.assertEqual(self.rows(), [])
+            self.assertIsNone(self.view)
+            self.assertEqual(self.contacted, [])
+
+            await pilot.click("#config-cancel")
+            await pilot.pause()
+            self.assertNotIsInstance(self.app.screen, tui.ConfigScreen)
+            self.assertTrue(self.app.no_clusters.display)
+            self.assertFalse(self.app.tabs.display)
+            self.assertIn("Click Config to add one", str(self.app.no_clusters.content))
+            # Only Config and Quit have anything to act on.
+            self.assertEqual(self.actions(), "Config   Quit")
+            self.app.refresh_visible()
+            self.app.update_status()
+
+            await self.click_action(pilot, "Config")
+            await self.add_row(pilot, name="fir", ssh="fir.example.org")
+            messages = await self.save(pilot)
+
+            # Then the tab's own notes, as it connects.
+            self.assertEqual(
+                messages[0], f"Saved {self.path}. Reloaded: fir tab added."
+            )
+            self.assertEqual(self.tab_names(), ["fir"])
+            self.assertFalse(self.app.no_clusters.display)
+            self.assertTrue(self.app.tabs.display)
+            self.assertIn("Refresh", self.actions())
+            # The first tab opens as it is added, so it connects at once.
+            self.assertEqual(self.view.cluster.name, "fir")
+            self.assertEqual(self.contacted, ["fir.example.org"])
+            self.assertEqual(self.table("partitions").row_count, 2)
+            self.assertTrue(self.view.host.streamed)
 
     async def test_keeps_the_form_open_on_invalid_settings(self):
         async with self.app.run_test(size=(150, 44)) as pilot:

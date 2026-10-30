@@ -10,7 +10,8 @@ Everything is a click; sqtop binds no keys. The action bar at the bottom
 refreshes, re-probes, edits the request, turns the hourly email (`mailer`) of
 the clusters shown so far on or off (it stops when the dashboard exits), opens
 the config form (`ConfigScreen`, which saves the config file and applies it)
-and quits.
+and quits. With no cluster to show (no Slurm here and none with an ssh host),
+there are no tabs: the dashboard opens on the config form to add one.
 """
 
 import dataclasses
@@ -164,7 +165,10 @@ class RequestScreen(ModalScreen):
             )
             yield Label("Memory")
             yield Input(
-                settings.mem, id="mem", placeholder="32G", disabled=settings.whole_node
+                settings.mem,
+                id="mem",
+                placeholder=probes.Settings.mem,
+                disabled=settings.whole_node,
             )
             yield Label("Walltimes (blank: one per partition time limit)")
             yield Input(walltimes, id="walltimes", placeholder="0-03:00:00, 1-00:00:00")
@@ -205,7 +209,7 @@ class RequestScreen(ModalScreen):
             settings = dataclasses.replace(
                 self.settings,
                 cpus=cpus,
-                mem=self.query_one("#mem", Input).value.strip() or "32G",
+                mem=self.query_one("#mem", Input).value.strip() or probes.Settings.mem,
                 extra=tuple(shlex.split(self.query_one("#extra", Input).value)),
                 walltimes=probes.parse_walltimes(
                     self.query_one("#walltimes", Input).value
@@ -220,7 +224,15 @@ class RequestScreen(ModalScreen):
 
 
 class ClusterRow(Horizontal):
-    """One cluster's profile in the config form: name, rules and ssh host."""
+    """One cluster's profile in the config form: name, rules and ssh host.
+
+    Each rule is a `Select` of the modes the loader accepts.
+    """
+
+    RULES = (
+        ("gpu_counts", profiles.GPU_COUNT_MODES),
+        ("resources", profiles.RESOURCE_MODES),
+    )
 
     def __init__(self, cluster="", settings=None):
         super().__init__()
@@ -231,35 +243,37 @@ class ClusterRow(Horizontal):
         settings = self.settings
         yield Input(self.cluster, classes="name", placeholder="ClusterName")
         # Only the modes the loader accepts can be picked.
-        yield Select(
-            [(mode, mode) for mode in profiles.GPU_COUNT_MODES],
-            value=settings.get("gpu_counts", profiles.Profile.gpu_counts),
-            allow_blank=False,
-            compact=True,
-            classes="gpu-counts",
-        )
+        for rule, modes in self.RULES:
+            yield Select(
+                [(mode, mode) for mode in modes],
+                value=settings.get(rule, getattr(profiles.Profile, rule)),
+                allow_blank=False,
+                compact=True,
+                classes=rule.replace("_", "-"),
+            )
         yield Input(str(settings.get("ssh", "")), classes="ssh", placeholder="host")
         yield Button("Remove", classes="remove")
 
     def field(self, name):
         return self.query_one(f".{name}", Input).value.strip()
 
-    @property
-    def gpu_counts(self):
-        return self.query_one(".gpu-counts", Select).value
+    def rule(self, rule):
+        return self.query_one(f".{rule.replace('_', '-')}", Select).value
 
     def values(self):
         """(name, settings) from the row, or None for an empty one.
 
-        The default GPU counts are left out of the file.
+        Rules left at their defaults are left out of the file.
         """
-        name, ssh, gpu_counts = self.field("name"), self.field("ssh"), self.gpu_counts
-        default = gpu_counts == profiles.Profile.gpu_counts
-        if not (name or ssh) and default:
+        name, ssh = self.field("name"), self.field("ssh")
+        rules = {
+            rule: self.rule(rule)
+            for rule, _ in self.RULES
+            if self.rule(rule) != getattr(profiles.Profile, rule)
+        }
+        if not (name or ssh or rules):
             return None
-        settings = {}
-        if not default:
-            settings["gpu_counts"] = gpu_counts
+        settings = dict(rules)
         if ssh:
             settings["ssh"] = ssh
         return name, settings
@@ -322,6 +336,7 @@ class ConfigScreen(ModalScreen):
             with Horizontal(classes="cluster-heading"):
                 yield Label("Name", classes="name")
                 yield Label("GPU counts", classes="gpu-counts")
+                yield Label("CPU/memory", classes="resources")
                 yield Label("ssh host", classes="ssh")
             with Vertical(id="clusters"):
                 for name, settings in (self.config.get("clusters") or {}).items():
@@ -834,6 +849,8 @@ class ClusterView(Vertical):
         notes = ["whole node"] if settings.whole_node else []
         if grid.gpus_by_node:
             notes.append("GPUs by whole node")
+        if grid.sized_by_gpu:
+            notes.append("GPU rows: CPUs and memory by GPU")
         # Clicking the command switches sbatch/srun.
         toggle = Style(underline=True, meta={"@click": "app.toggle_command"})
         subtitle = Text()
@@ -1212,7 +1229,10 @@ class ClusterView(Vertical):
 
     def set_profile(self, profile):
         """Use a reloaded profile; True if its rules changed (then re-probed)."""
-        changed = profile.gpu_counts != self.profile.gpu_counts
+        changed = (profile.gpu_counts, profile.resources) != (
+            self.profile.gpu_counts,
+            self.profile.resources,
+        )
         self.profile = self.cluster.profile = profile
         if changed:
             self.query_one("#identity", Static).update(self.identity())
@@ -1340,6 +1360,7 @@ class ClusterView(Vertical):
         hardware.display = showing
         (hardware if showing else partitions).focus()
 
+
 class SqtopApp(App):
     TITLE = "sqtop"
     # Every control is a click (the action bar, titles and links); the command
@@ -1348,6 +1369,7 @@ class SqtopApp(App):
     CSS = """
     TabbedContent, ContentSwitcher, TabPane, ClusterView { height: 1fr; }
     TabPane { padding: 0; }
+    #no-clusters { height: 1fr; padding: 1 2; }
     #topbar { height: 1; background: $panel; padding: 0 1; }
     #actions { dock: bottom; height: 1; background: $panel; padding: 0 1; }
     #identity { width: 1fr; }
@@ -1428,7 +1450,8 @@ class SqtopApp(App):
     ClusterRow { height: 1; }
     ClusterRow Input, .cluster-heading Label { width: 1fr; margin-right: 1; }
     ClusterRow .name, .cluster-heading .name { width: 20; }
-    ClusterRow .gpu-counts, .cluster-heading .gpu-counts { width: 14; margin-right: 1; }
+    ClusterRow .gpu-counts, .cluster-heading .gpu-counts { width: 15; margin-right: 1; }
+    ClusterRow .resources, .cluster-heading .resources { width: 12; margin-right: 1; }
     ClusterRow Select > SelectCurrent { background: $boost; }
     ClusterRow Button { height: 1; min-width: 8; border: none; margin: 0; }
     #config-error { margin-top: 1; }
@@ -1456,34 +1479,67 @@ class SqtopApp(App):
             for index, cluster in enumerate(self.clusters):
                 with TabPane(cluster.name, id=f"cluster-{index}"):
                     yield ClusterView(cluster, self.settings, f"cluster-{index}")
+        yield Static(self.no_clusters_text(), id="no-clusters")
         yield Static(self.actions(), id="actions")
 
     def on_mount(self):
         # App.query_one searches the screen on top, which is the request dialog
         # while it is open, so keep direct references to the dashboard widgets.
         self.tabs = self.query_one(TabbedContent)
+        self.no_clusters = self.query_one("#no-clusters", Static)
         self.action_bar = self.query_one("#actions", Static)
         self.views = list(self.query(ClusterView))
+        self.show_clusters()
         self.set_interval(REFRESH_SECONDS, self.refresh_visible)
         self.set_interval(1, self.update_status)
-        self.view.activate()
+        if self.views:
+            self.view.activate()
+        else:
+            self.action_edit_config()
 
     @property
     def view(self):
-        """The cluster view on the visible tab."""
+        """The cluster view on the visible tab; None while there is no tab."""
+        if not self.views:
+            return None
         active = self.tabs.active
         return next((v for v in self.views if v.pane_id == active), self.views[0])
+
+    @staticmethod
+    def no_clusters_text():
+        """What the dashboard shows while it has no tab."""
+        config = profiles.short_path(profiles.CONFIG_PATH)
+        text = Text("No cluster to show", style="bold")
+        text.append(
+            "\n\nSlurm is not available here ('scontrol' failed), and no cluster "
+            f"in {config} has an ssh host.\n\nClick ",
+        )
+        link = Style(underline=True, meta={"@click": "app.edit_config"})
+        text.append("Config", style=link)
+        text.append(
+            " to add one: its name (ClusterName in scontrol) and the ssh host of "
+            "its login node. Its tab reads Slurm there over ssh, with your "
+            "~/.ssh/config."
+        )
+        return text
+
+    def show_clusters(self):
+        """Show the tabs, or while there are none, how to add a cluster."""
+        self.tabs.display = bool(self.views)
+        self.no_clusters.display = not self.views
+        self.update_actions()
 
     def refresh_visible(self):
         """Only the visible cluster refreshes, probing when its estimates are old.
 
         Hidden tabs are left alone; opening one refreshes it if needed.
         """
-        if self.view.snap is not None:
+        if self.view is not None and self.view.snap is not None:
             self.view.refresh_snapshot()
 
     def update_status(self):
-        self.view.update_status()
+        if self.view is not None:
+            self.view.update_status()
 
     @on(TabbedContent.TabActivated)
     def tab_activated(self, event):
@@ -1494,7 +1550,8 @@ class SqtopApp(App):
     def actions(self):
         """The action bar: a click on a label runs its action, which acts on
         the visible tab for the first three. The email label says whether the
-        hourly email is on, and a click flips it."""
+        hourly email is on, and a click flips it. Without a tab, only Config
+        and Quit have anything to act on."""
         on = self.mail_timer is not None
         controls = [
             ("Refresh", "app.refresh", None),
@@ -1504,6 +1561,8 @@ class SqtopApp(App):
             ("Config", "app.edit_config", None),
             ("Quit", "app.quit", None),
         ]
+        if not self.clusters:
+            controls = controls[-2:]
         text = Text()
         for label, action, highlight in controls:
             if text:
@@ -1720,6 +1779,8 @@ class SqtopApp(App):
         view = ClusterView(cluster, self.settings, pane_id)
         self.clusters.append(cluster)
         self.views.append(view)
+        if len(self.views) == 1:  # the first tab, which opens as it is added
+            self.show_clusters()
         self.tabs.add_pane(TabPane(cluster.name, view, id=pane_id))
 
     def remove_view(self, view):

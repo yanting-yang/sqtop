@@ -139,15 +139,32 @@ class MainTests(unittest.TestCase):
 
         self.assertIn("bad setting", str(raised.exception.code))
 
-    def test_exits_when_there_is_nothing_to_show(self):
+    def test_reports_nothing_without_a_cluster(self):
         self.find_clusters.return_value = []
-        with self.assertRaises(SystemExit) as raised:
+        with (
+            patch.object(cli.sys.stdout, "isatty", return_value=False),
+            self.assertRaises(SystemExit) as raised,
+        ):
             cli.main([])
 
         self.assertIn(
             f"no cluster in {profiles.short_path(profiles.CONFIG_PATH)} has an ssh host",
             str(raised.exception.code),
         )
+        self.assertIn("add one with Config", str(raised.exception.code))
+        self.print_reports.assert_not_called()
+
+    def test_opens_the_dashboard_without_a_cluster_to_add_one(self):
+        self.find_clusters.return_value = []
+        app = Mock()
+        with (
+            patch.object(cli.sys.stdout, "isatty", return_value=True),
+            patch("sqtop.tui.SqtopApp", return_value=app) as app_class,
+        ):
+            cli.main([])
+
+        app_class.assert_called_once_with([], probes.Settings())
+        app.run.assert_called_once_with()
 
 
 if __name__ == "__main__":

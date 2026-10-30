@@ -2,8 +2,8 @@
 
 Everything else (hardware, partitions, time tiers, accounts, QOS limits) is
 read from Slurm. A profile only records what Slurm cannot tell us: site
-rules about GPU request sizes, and an ssh host to reach the cluster from
-elsewhere.
+rules about GPU request sizes and about sizing CPUs and memory, and an ssh
+host to reach the cluster from elsewhere.
 
 Profiles live in the config file with the email settings (`[mail]` for
 Slurm's job emails, `[smtp]` for the dashboard's hourly email): your own
@@ -48,7 +48,8 @@ CONFIG_PATH = (
 )
 SMTP_PORT = 587
 
-GPU_COUNT_MODES = ("pow2", "all", "whole_node")
+GPU_COUNT_MODES = ("pow2", "all", "whole_node", "one_or_node")
+RESOURCE_MODES = ("request", "by_gpu")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -56,6 +57,9 @@ class Profile:
     name: str = "generic"
     # Which GPU counts to probe for each type, up to the per-job ceiling.
     gpu_counts: str = "pow2"
+    # Whether GPU requests ask for the request's CPUs and memory, or leave
+    # them to a site that sizes them by GPU and refuses --mem (`by_gpu`).
+    resources: str = "request"
     # ssh destination of a login node, to show this cluster from elsewhere.
     ssh: str | None = None
 
@@ -241,11 +245,17 @@ def build_profile(name, settings):
             f"cluster {name!r}: gpu_counts must be one of {', '.join(GPU_COUNT_MODES)}"
         )
 
+    resources = settings.get("resources", "request")
+    if resources not in RESOURCE_MODES:
+        raise ValueError(
+            f"cluster {name!r}: resources must be one of {', '.join(RESOURCE_MODES)}"
+        )
+
     ssh = settings.get("ssh")
     if ssh is not None and (not isinstance(ssh, str) or not ssh.strip()):
         raise ValueError(f"cluster {name!r}: ssh must be a host name or alias")
 
-    return Profile(name=name, gpu_counts=gpu_counts, ssh=ssh)
+    return Profile(name=name, gpu_counts=gpu_counts, resources=resources, ssh=ssh)
 
 
 def load_profile(cluster, path=None):

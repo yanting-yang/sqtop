@@ -1,7 +1,10 @@
 import io
 import shlex
+import shutil
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from sqtop import hosts
@@ -116,7 +119,8 @@ class RemoteTests(unittest.TestCase):
     def test_runs_a_batch_in_one_session(self, run):
         run.return_value = completed("\x1e0 0\nnodes\n\x1e1 1\n\x1e2 0\nparts")
         remote = self.remote()
-        remote.path = "/opt/slurm/bin:/usr/bin"
+        remote.env = {"PATH": "/opt/slurm/bin:/usr/bin", "SLURM_CONF": "/cm/s.conf"}
+        remote.workdir = "/scratch/me"
 
         outputs = remote.run_batch([["scontrol", "show", "node"], ["bad"], ["x"]])
 
@@ -124,6 +128,11 @@ class RemoteTests(unittest.TestCase):
         run.assert_called_once()
         script = shlex.split(run.call_args.args[0][-1])[2]
         self.assertIn("PATH=/opt/slurm/bin:/usr/bin; export PATH", script)
+        # Where a module loads Slurm, its config is not where Slurm looks first.
+        self.assertIn("SLURM_CONF=/cm/s.conf; export SLURM_CONF", script)
+        # Some sites refuse jobs submitted from /home.
+        self.assertIn("cd /scratch/me", script)
+        self.assertLess(script.index("cd /scratch/me"), script.index("scontrol"))
         self.assertIn("scontrol show node", script)
 
     @patch.object(hosts.subprocess, "run")
@@ -134,6 +143,39 @@ class RemoteTests(unittest.TestCase):
 
         script = shlex.split(run.call_args.args[0][-1])[2]
         self.assertIn("bash -lc", script)
+        for name in ("PATH", "SLURM_CONF"):
+            self.assertIn(f"{name}=$v; export {name};", script)
+        self.assertIn('v=$(from_login SCRATCH); [ -n "$v" ] && cd "$v"', script)
+
+    def test_takes_only_marked_values_from_a_login_shell_that_prints(self):
+        # Run the prelude in a real sh, with a bash whose login prints and sets
+        # what a Slurm module would; it skips this machine's own profile.
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        scratch = directory / "scratch"
+        scratch.mkdir()
+        fake_bash = directory / "bash"
+        fake_bash.write_text(
+            "#!/bin/sh\n"
+            "echo 'Welcome to the cluster'\n"
+            f"PATH=/opt/slurm/bin:$PATH SLURM_CONF=/cm/s.conf SCRATCH={scratch} "
+            'exec /bin/bash --noprofile --norc -c "$2"\n'
+        )
+        fake_bash.chmod(0o755)
+        script = hosts.login_prelude() + 'echo "$PATH|${SLURM_CONF-}"; pwd'
+
+        result = subprocess.run(
+            ["/bin/sh", "-c", script],
+            env={"PATH": f"{directory}:/usr/bin:/bin", "HOME": str(directory)},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        path, pwd = result.stdout.splitlines()
+        self.assertTrue(path.startswith(f"/opt/slurm/bin:{directory}:"), path)
+        self.assertTrue(path.endswith("|/cm/s.conf"), path)
+        self.assertEqual(Path(pwd).resolve(), scratch.resolve())
 
     @patch.object(hosts.subprocess, "run")
     def test_raises_when_ssh_fails(self, run):
@@ -148,11 +190,13 @@ class RemoteTests(unittest.TestCase):
     def test_submits_on_the_cluster(self, run):
         run.return_value = completed("Submitted batch job 5\n\n\x1e0\n")
         remote = self.remote()
-        remote.path = "/opt/slurm/bin"
+        remote.env = {"PATH": "/opt/slurm/bin"}
+        remote.workdir = "/scratch/me"
 
         self.assertEqual(remote.act(["sbatch", "-t1"]), (0, "Submitted batch job 5"))
         script = shlex.split(run.call_args.args[0][-1])[2]
         self.assertIn("PATH=/opt/slurm/bin; export PATH", script)
+        self.assertIn("cd /scratch/me", script)
         self.assertIn("sbatch -t1 </dev/null 2>&1", script)
 
         run.return_value = completed(stderr="Connection closed.", returncode=255)

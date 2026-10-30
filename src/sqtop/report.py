@@ -136,6 +136,8 @@ def print_grid(grid, now, out=None):
         request += ", whole node"
     if grid.gpus_by_node:
         request += ", GPU rows by whole node"
+    if grid.sized_by_gpu:
+        request += ", GPU rows without -c/--mem"
     if settings.mail_user:
         request += f", email {settings.mail_user} on {settings.mail_type}"
     print(
@@ -173,9 +175,11 @@ def print_grid(grid, now, out=None):
     if example is not None:
         print(f"Probe, e.g.: {example.probe}", file=out)
         print(f"Submit it with: {example.command}", file=out)
-        differ = "Other cells differ only in --gres and -t"
+        differ = "Other cells differ only in --gpus-per-node and -t"
         if grid.gpus_by_node:
             differ += "; GPU rows ask for --exclusive --mem=0 instead of -c/--mem"
+        if grid.sized_by_gpu:
+            differ += "; GPU rows leave out -c/--mem"
         print(f"{differ}.", file=out)
     print(file=out)
 

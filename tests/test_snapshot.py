@@ -229,6 +229,7 @@ class DiscoverScopesTests(unittest.TestCase):
                 "--account=lab",
                 "--qos=a",
                 "-t1:00:00",
+                "--output=/dev/null",
                 "--wrap=sleep infinity",
             ],
         )
@@ -535,6 +536,8 @@ class DetectTests(unittest.TestCase):
         host = FakeHost(
             {
                 "printenv PATH": "/opt/slurm/bin:/usr/bin\n",
+                "printenv SLURM_CONF": "/cm/slurm/etc/fir/slurm.conf\n",
+                "pwd": "/scratch/me\n",
                 "id -un": "me\n",
                 "id -Gn": "me lab\n",
                 "hostname -s": "login2\n",
@@ -547,7 +550,18 @@ class DetectTests(unittest.TestCase):
         info = snapshot.ClusterInfo.detect(host)
 
         self.assertEqual(len(host.batches), 1)
-        self.assertEqual(host.path, "/opt/slurm/bin:/usr/bin")
+        self.assertEqual(
+            host.env,
+            {
+                "PATH": "/opt/slurm/bin:/usr/bin",
+                "SLURM_CONF": "/cm/slurm/etc/fir/slurm.conf",
+            },
+        )
+        self.assertEqual(host.workdir, "/scratch/me")
+        # Without SLURM_CONF in the login shell, only PATH is carried over.
+        host.responses.pop("printenv SLURM_CONF")
+        snapshot.ClusterInfo.detect(host)
+        self.assertEqual(list(host.env), ["PATH"])
         self.assertEqual(
             (info.name, info.version, info.user, info.hostname, info.shell),
             ("fir", "26.05", "me", "login2", "zsh"),

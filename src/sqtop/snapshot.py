@@ -14,7 +14,7 @@ import platform
 import re
 from collections import Counter, defaultdict
 
-from . import slurm
+from . import hosts, slurm
 
 # The controller's reply when the caller may not use an account or QOS.
 INVALID_SCOPE = re.compile(r"Invalid (?:account|qos)", re.IGNORECASE)
@@ -74,7 +74,8 @@ class Limit:
 
 # What `ClusterInfo.detect` reads on a remote login node, in one session.
 REMOTE_DETECT_COMMANDS = [
-    ["printenv", "PATH"],
+    *(["printenv", name] for name in hosts.LOGIN_ENV),
+    ["pwd"],
     ["id", "-un"],
     ["id", "-Gn"],
     ["hostname", "-s"],
@@ -98,8 +99,10 @@ class ClusterInfo:
     def detect(cls, host):
         """Read the cluster name, Slurm version and the caller's identity.
 
-        On a remote host this also records the login shell's PATH on the host,
-        which later commands need to find Slurm.
+        On a remote host this also records the login shell's Slurm
+        environment and scratch directory on the host, which later commands
+        need to find Slurm and its config, and to be accepted where /home is
+        not (`hosts.LOGIN_ENV`).
         """
         if host.ssh is None:
             output = host.run(slurm.CONFIG_COMMAND)
@@ -114,10 +117,15 @@ class ClusterInfo:
                 shell=slurm.login_shell(),
             )
 
-        path, user, groups, hostname, shell, config = host.run_batch(
+        *env, workdir, user, groups, hostname, shell, config = host.run_batch(
             REMOTE_DETECT_COMMANDS, login_path=True
         )
-        host.path = (path or "").strip() or None
+        host.env = {
+            name: value.strip()
+            for name, value in zip(hosts.LOGIN_ENV, env)
+            if value and value.strip()
+        }
+        host.workdir = (workdir or "").strip() or None
         config = {} if config is None else slurm.parse_config(config)
         return cls(
             name=config.get("ClusterName", ""),

@@ -26,7 +26,7 @@ it runs.
 │ 4x l40s     0-02:12:00    0-02:17:00    0-01:48:00    0-21:38:00    7-18:03:00         │╭─ My jobs ────────────────────────────────────────────────╮
 │ CPU only    0-02:12:00    0-01:27:00    0-01:48:00    0-19:17:00    7-15:47:00         ││ Job    Name   St  Start        Time  Nodes  Reason       │
 │                                                                                        ││ No jobs in the queue                                     │
-╰───────────────────────────────────────────────────────────────── sbatch -c4 --mem=32G ─╯╰──────────────────────────────────────────────────────────╯
+╰─────────────────────────────────────────────────────────────── sbatch -c32 --mem=128G ─╯╰──────────────────────────────────────────────────────────╯
 ╭─ Details ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ gpubase_h100_b1  UP  usable  · max time 0-03:00:00 · priority tier 1                                                                               │
 │ Nodes 10 (5 mixed, 3 allocated, 2 unavailable) · pending jobs 117                                                                                  │
@@ -39,7 +39,8 @@ it runs.
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/) (it fetches Python 3.13 if you do not have it)
-- A Slurm login node (`scontrol` and `squeue` on `PATH`; estimates need `sbatch`/`srun`)
+- A Slurm login node (`scontrol` and `squeue` on `PATH`; estimates need `sbatch`/`srun`),
+  or ssh access to one from your own machine ([Remote clusters](#remote-clusters))
 
 ## Usage
 
@@ -56,7 +57,7 @@ There are no options. The first tab is the cluster you are logged in to (from
 `ClusterName` in `scontrol show config`), and it is the only one checked at startup.
 Every other cluster with an `ssh` host in the [config file](#configuration) (Fir,
 Killarney and Tamia) gets a tab too, but is only contacted, over ssh, once you open its
-tab (click it). Every probe starts as 4 CPUs and 32 GB at each partition
+tab (click it). Every probe starts as 32 CPUs and 128 GB at each partition
 time limit with `sbatch`; change a tab's request with `Edit request` (CPUs, memory,
 walltimes, extra `sbatch` options), and click the command under Start estimates to
 switch between `sbatch` and `srun`. The visible tab refreshes every minute and re-probes
@@ -72,7 +73,15 @@ with "Requested operation is presently disabled".
 
 Remote tabs run Slurm on the cluster's login node through `ssh`, with your
 `~/.ssh/config` (aliases, users, keys). Nothing is sent to a remote cluster until you
-open its tab, and only the visible tab refreshes.
+open its tab, and only the visible tab refreshes. Commands get the Slurm setup of your
+login shell there (`PATH`, and `SLURM_CONF` where a module sets it, as on Killarney) and
+run from your `$SCRATCH`, since some clusters (Killarney) refuse jobs submitted from
+`/home`.
+
+sqtop also runs where Slurm is not installed, such as your laptop: then it shows only
+remote tabs. The first time, with no cluster in your [config](#configuration), it opens
+on the `Config` form: add the cluster's name and the ssh host of its login node, click
+`Save`, and its tab opens and connects.
 
 sqtop never asks for a password or MFA. For a cluster that needs one, let ssh share
 connections and log in with `ssh` in another terminal first; sqtop reuses that
@@ -149,8 +158,10 @@ the dashboard's actions, and each dialog closes with its own buttons.
 - **Details** for an estimate shows the partition it would land in, the probe that
   produced the estimate with the scheduler's reply, and the command to submit the same
   request; click `Copy` after either to copy it. The probe has only what the estimate
-  depends on; the submit command drops `--test-only` and adds your email options and
-  `--output=/dev/null`, so no `slurm-<jobid>.out` file is left behind.
+  depends on; the submit command drops `--test-only` and adds your email options. Both
+  name `--output=/dev/null`, so no `slurm-<jobid>.out` file is left behind and sites
+  that refuse output to a read-only `/home` accept them. GPUs are asked for with
+  `--gpus-per-node`, which some sites accept where they refuse `--gres`.
   `--account`/`--qos` are left out when Slurm would pick them anyway.
 - **Submit**: click the `Submit` label in Details to run an `sbatch` command, after a
   dialog shows it and asks you to confirm; `Cancel` submits nothing. The job is submitted in the background (on the cluster's login node
@@ -176,7 +187,8 @@ All settings live in one file, `~/.config/sqtop/config.toml`
 and cluster profiles (`[clusters.<name>]`). Click `Config` in the dashboard to edit it
 in a form: the job email address and states, the hourly email's server, port, sender,
 password and recipient, and one row per cluster (name, GPU counts picked from `pow2`,
-`all` and `whole_node`, and ssh host) with `Add cluster` and `Remove`. `Cancel` closes
+`all`, `whole_node` and `one_or_node`, CPU/memory picked from `request` and `by_gpu`,
+and ssh host) with `Add cluster` and `Remove`. `Cancel` closes
 it unchanged. `Save` checks the settings (a problem is shown under the form, which stays
 open), writes the file privately (`chmod 600`, since it holds the SMTP password) and
 applies what changed without a restart: clusters added get tabs and removed ones lose
@@ -184,8 +196,9 @@ theirs, changed profiles and `[mail]` settings are probed again, and the hourly 
 switches to a changed `[smtp]`.
 
 Without the file, `sqtop` shows only the cluster you are logged in to, with no email
-settings. The file is plain TOML, so you can also edit it by hand; the form rewrites it
-without comments.
+settings; where Slurm is not available, it opens on the form to add a remote cluster.
+The file is plain TOML, so you can also edit it by hand; the form rewrites it without
+comments.
 
 ### Other clusters
 
@@ -196,13 +209,19 @@ row in the config form (`Config`); in the file it is a table:
 
 ```toml
 [clusters.mycluster]          # the ClusterName from `scontrol show config`
-gpu_counts = "all"            # "pow2" (1, 2, 4, ... default), "all" or "whole_node"
+gpu_counts = "all"            # "pow2" (1, 2, 4, ... default), "all", "whole_node"
                               # (GPU jobs then take whole nodes: --exclusive --mem=0)
+                              # or "one_or_node" (1 GPU and the whole node)
+resources = "by_gpu"          # "request" (default): GPU jobs ask for the CPUs and
+                              # memory in Edit request; "by_gpu": they leave -c/--mem
+                              # out, for sites that size them by GPU and refuse --mem
 ssh = "login.mycluster.org"   # a tab for it from anywhere; host or ~/.ssh/config alias
 ```
 
 For example, the Alliance clusters this was written on need no rules, only an `ssh`
-host for a tab, except `tamia`, which allocates GPUs by whole node:
+host for a tab, except `tamia`, which allocates GPUs by whole node, and Trillium's GPU
+subcluster (its own login node, `trillium-gpu`), which takes one GPU or whole nodes,
+gives each GPU its share of CPUs and memory, and refuses `--mem`:
 
 ```toml
 [clusters.fir]
@@ -214,7 +233,16 @@ ssh = "killarney.alliancecan.ca"
 [clusters.tamia]
 ssh = "tamia.alliancecan.ca"
 gpu_counts = "whole_node"
+
+[clusters.trillium-gpu]
+ssh = "trillium-gpu.alliancecan.ca"
+gpu_counts = "one_or_node"
+resources = "by_gpu"
 ```
+
+Narval, Nibi, Rorqual and Vulcan need no rules either. Trillium's GPU nodes report
+their GPUs untyped in `CfgTRES`; sqtop names them from the nodes' `Gres=` (`h100`,
+`h200`, `b200`), so each model gets its own rows.
 
 The walltimes probed are not a setting: they are the distinct time limits of the
 partitions you can use, which is where routing changes, and `Edit request` overrides
@@ -231,6 +259,10 @@ On clusters that only allocate GPUs by node (`gpu_counts = "whole_node"`, such a
 Tamia) the GPU rows always ask for the whole node this way, so a job that holds all of
 a node's GPUs also gets its CPUs and memory; the CPU-only row keeps the editor's
 values. The estimates panel then notes "GPUs by whole node".
+
+On clusters that size CPUs and memory by GPU (`resources = "by_gpu"`, such as Trillium
+GPU) the GPU rows leave `-c`/`--mem` out instead, and the panel notes "GPU rows: CPUs
+and memory by GPU".
 
 ### Email notifications
 

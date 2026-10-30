@@ -56,6 +56,49 @@ class GpuRollupTests(unittest.TestCase):
         self.assertEqual(node["alloc_gpus"], {"nvidia_b200": 3})
 
 
+class GresModelTests(unittest.TestCase):
+    """Where accounting does not track GPU models, as on Trillium GPU,
+    `CfgTRES` has only the total and `Gres=` names the model."""
+
+    BLOCK = """NodeName=trig0002 Arch=x86_64 CoresPerSocket=48
+   CPUAlloc=80 CPUEfctv=96 CPUTot=96 CPULoad=60.20
+   AvailableFeatures=(null)
+   Gres=gpu:h100:4(S:2-3)
+   RealMemory=770000 AllocMem=768000 FreeMem=10000 Sockets=2 Boards=1
+   State=MIXED ThreadsPerCore=1 TmpDisk=0 Weight=1 Owner=N/A MCS_label=N/A
+   Partitions=debug,compute,debug_full_node,compute_full_node
+   CfgTRES=cpu=96,mem=770000M,billing=4,gres/gpu=4
+   AllocTRES=cpu=80,mem=750G,gres/gpu=4
+"""
+
+    def test_reads_gpu_models_from_gres(self):
+        self.assertEqual(slurm.parse_gres_gpus("gpu:h100:4(S:2-3)"), {"h100": 4})
+        self.assertEqual(
+            slurm.parse_gres_gpus("gpu:a100:2(S:0),gpu:v100:2(S:1),shard:8"),
+            {"a100": 2, "v100": 2},
+        )
+        self.assertEqual(slurm.parse_gres_gpus("gpu:4(S:0-1)"), {})
+        self.assertEqual(slurm.parse_gres_gpus("(null)"), {})
+
+    def test_names_the_untyped_total_after_the_node_model(self):
+        node = slurm.normalize_gpu_rollups(slurm.parse_nodes(self.BLOCK)[0])
+
+        self.assertEqual(node["cfg_gpus"], {"h100": 4})
+        self.assertEqual(node["alloc_gpus"], {"h100": 4})
+
+    def test_keeps_the_total_untyped_with_several_models(self):
+        block = self.BLOCK.replace("gpu:h100:4(S:2-3)", "gpu:a100:2,gpu:v100:2")
+        node = slurm.normalize_gpu_rollups(slurm.parse_nodes(block)[0])
+
+        self.assertEqual(node["cfg_gpus"], {"gpu": 4})
+        self.assertEqual(node["alloc_gpus"], {"gpu": 4})
+
+    def test_prefers_models_in_cfg_tres(self):
+        node = slurm.normalize_gpu_rollups(slurm.parse_nodes(NODE_BLOCK)[0])
+
+        self.assertEqual(node["cfg_gpus"], {"nvidia_b200": 4})
+
+
 class ParseNodesTests(unittest.TestCase):
     def test_parses_core_fields(self):
         node = slurm.parse_nodes(NODE_BLOCK)[0]
@@ -565,7 +608,13 @@ class TestProbeTests(unittest.TestCase):
     def test_wraps_sleep_infinity_for_sbatch_instead_of_a_batch_script(self):
         self.assertEqual(
             slurm.test_command("sbatch", ["--test-only", "--mem=32G"]),
-            ["sbatch", "--test-only", "--mem=32G", "--wrap=sleep infinity"],
+            [
+                "sbatch",
+                "--test-only",
+                "--mem=32G",
+                "--output=/dev/null",
+                "--wrap=sleep infinity",
+            ],
         )
 
     def test_runs_the_login_shell_after_srun_directives(self):
@@ -637,12 +686,12 @@ class FormatRunCommandTests(unittest.TestCase):
 
     def test_wraps_sleep_infinity_for_sbatch_instead_of_a_script(self):
         command = slurm.format_run_command(
-            "sbatch", ["--gres=gpu:h100:2", "--time=3:00:00"]
+            "sbatch", ["--gpus-per-node=h100:2", "--time=3:00:00"]
         )
 
         self.assertEqual(
             command,
-            "sbatch --gres=gpu:h100:2 --time=3:00:00 --output=/dev/null "
+            "sbatch --gpus-per-node=h100:2 --time=3:00:00 --output=/dev/null "
             '--wrap="sleep infinity"',
         )
         self.assertNotIn("job.sh", command)
@@ -677,7 +726,7 @@ class FormatRunCommandTests(unittest.TestCase):
 
         self.assertEqual(
             slurm.format_test_command("sbatch", directives),
-            'sbatch --test-only -t3:00:00 --wrap="sleep infinity"',
+            'sbatch --test-only -t3:00:00 --output=/dev/null --wrap="sleep infinity"',
         )
         self.assertEqual(
             slurm.format_test_command("srun", directives, "zsh"),

@@ -186,18 +186,18 @@ class SendReportTests(TempDirTestCase):
         third = self.send([job("2", "RUNNING", nodelist="kn002")], NOW + 2 * HOUR)
 
         self.assertEqual(
-            self.text(first), "here: 1 running, 1 pending\n\nREPORT here -c4\n"
+            self.text(first), "here: 1 running, 1 pending\n\nREPORT here -c32\n"
         )
         self.assertEqual(
             self.text(second),
             "here: 1 running, 0 pending. Since 15:00:\n"
             "  2 (train) started on kn002\n"
             "  1 (train) ended: COMPLETED\n"
-            "\nREPORT here -c4\n",
+            "\nREPORT here -c32\n",
         )
         self.assertEqual(
             self.text(third),
-            "here: 1 running, 0 pending; no changes since 16:00\n\nREPORT here -c4\n",
+            "here: 1 running, 0 pending; no changes since 16:00\n\nREPORT here -c32\n",
         )
 
     def test_dates_changes_since_an_earlier_day(self):
@@ -216,7 +216,7 @@ class SendReportTests(TempDirTestCase):
 
         self.assertTrue(text.startswith("fir: 0 running, 0 pending\n"))
         self.assertIn("tamia: 0 running, 0 pending\n", text)
-        self.assertIn(f"REPORT fir -c4\n{'=' * 80}\n\nREPORT tamia -c4\n", text)
+        self.assertIn(f"REPORT fir -c32\n{'=' * 80}\n\nREPORT tamia -c32\n", text)
 
     def test_reports_each_cluster_with_its_own_request(self):
         def print_cluster(cluster, settings, out):

@@ -102,15 +102,18 @@ class ProfileTests(unittest.TestCase):
         path = self.config(
             """
 [clusters.mycluster]
-gpu_counts = "all"
+gpu_counts = "one_or_node"
+resources = "by_gpu"
 ssh = "login.example.org"
 """
         )
 
         mine = profiles.load_profile("mycluster", path=path)
 
-        self.assertEqual(mine.gpu_counts, "all")
+        self.assertEqual(mine.gpu_counts, "one_or_node")
+        self.assertEqual(mine.resources, "by_gpu")
         self.assertEqual(mine.ssh, "login.example.org")
+        self.assertEqual(profiles.load_profile("other", path=path).resources, "request")
 
     def test_reads_the_mail_table(self):
         self.assertEqual(
@@ -188,6 +191,7 @@ ssh = "login.example.org"
             '[clusters.x]\nwalltimes = ["0-01:00:00"]\n',
             '[clusters.x]\nssh = ""\n',
             '[clusters.x]\ngpu_counts = "some"\n',
+            '[clusters.x]\nresources = "none"\n',
             'clusters = "x"\n',
             "[clusters.x\n",
         ):

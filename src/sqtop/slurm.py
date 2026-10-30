@@ -17,7 +17,9 @@ SBATCH_PARTITION_PATTERN = re.compile(r"\bin partition (\S+)")
 # the time limit or `scancel`.
 SBATCH_WRAP = "sleep infinity"
 # Submitted jobs send their output here: the placeholder prints nothing worth
-# keeping, so no slurm-<jobid>.out is left where sbatch ran.
+# keeping, so no slurm-<jobid>.out is left where sbatch ran. Probes name it
+# too: some submit filters refuse a job whose output would go to a directory
+# compute nodes cannot write (Trillium GPU, from a remote tab's $HOME).
 SBATCH_OUTPUT = "--output=/dev/null"
 
 # Node state words (the base state or a `+FLAG`) that stop a node from taking
@@ -164,6 +166,17 @@ def parse_tres_gpus(tres_str):
     return gpus
 
 
+def parse_gres_gpus(gres):
+    """GPU counts by model in a node's `Gres=` (`gpu:h100:4(S:2-3)`).
+
+    Untyped entries (`gpu:4`) are left out.
+    """
+    gpus = {}
+    for match in re.finditer(r"\bgpu:([^:,(\s]+):(\d+)", gres):
+        gpus[match.group(1)] = gpus.get(match.group(1), 0) + int(match.group(2))
+    return gpus
+
+
 def remove_untyped_gpu_rollup(gpu_counts):
     """Drop the untyped GPU total when per-model counts are available."""
     typed = {label: count for label, count in gpu_counts.items() if label != "gpu"}
@@ -193,6 +206,20 @@ def gpu_display_names(gpus):
 
 
 def normalize_gpu_rollups(node):
+    """Count each node's GPUs once, by model where one is known.
+
+    Where `CfgTRES` has only the untyped total (accounting that does not
+    track models, as on Trillium GPU), a node with one model in `Gres=`
+    gives the total that model; with several, allocations cannot be split
+    by model, so the total stays untyped.
+    """
+    models = node.get("gres_gpus", {})
+    if len(models) == 1 and set(node["cfg_gpus"]) == {"gpu"}:
+        (model,) = models
+        for key in ("cfg_gpus", "alloc_gpus"):
+            node[key] = {
+                model if gpu == "gpu" else gpu: n for gpu, n in node[key].items()
+            }
     node["cfg_gpus"] = remove_untyped_gpu_rollup(node["cfg_gpus"])
     node["alloc_gpus"] = remove_untyped_gpu_rollup(node["alloc_gpus"])
     return node
@@ -203,7 +230,8 @@ def parse_nodes(output):
 
     `CfgTRES` usually lists an untyped `gres/gpu=N` beside per-model entries
     summing to the same N; `parse_tres_gpus` keeps both, and
-    `normalize_gpu_rollups` drops the rollup.
+    `normalize_gpu_rollups` drops the rollup. `gres_gpus` holds the models
+    in `Gres=`, which name the GPUs where `CfgTRES` does not.
     """
     nodes = []
     for block in re.split(r"\n(?=NodeName=)", output.strip()):
@@ -232,6 +260,8 @@ def parse_nodes(output):
         node["cfg_gpus"] = parse_tres_gpus(match.group(1) if match else "")
         match = re.search(r"AllocTRES=(\S*)", block)
         node["alloc_gpus"] = parse_tres_gpus(match.group(1) if match else "")
+        match = re.search(r"(?<!\S)Gres=(\S*)", block)
+        node["gres_gpus"] = parse_gres_gpus(match.group(1) if match else "")
 
         match = re.search(r"\bPartitions=(\S+)", block)
         node["partitions"] = match.group(1).split(",") if match else []
@@ -748,19 +778,21 @@ def test_command(command, directives, shell=None):
     """The `--test-only` probe for `directives` with sbatch or srun.
 
     Each names the program its `format_run_command` runs: sbatch wraps the
-    same placeholder, so no batch script is needed, and srun runs the login
-    shell. Some submit filters (Tamia's) only route an srun that names one.
+    same placeholder with the same output, so no batch script is needed,
+    and srun runs the login shell. Some submit filters (Tamia's) only route
+    an srun that names one.
     """
     if command == "srun":
         return ["srun", *directives, shell or login_shell()]
-    return ["sbatch", *directives, f"--wrap={SBATCH_WRAP}"]
+    return ["sbatch", *directives, SBATCH_OUTPUT, f"--wrap={SBATCH_WRAP}"]
 
 
 def format_test_command(command, directives, shell=None):
     """`test_command` as one line, quoted like `format_run_command`."""
     if command == "srun":
         return shlex.join(test_command(command, directives, shell))
-    return f'{shlex.join(["sbatch", *directives])} --wrap="{SBATCH_WRAP}"'
+    sbatch = shlex.join(["sbatch", *directives, SBATCH_OUTPUT])
+    return f'{sbatch} --wrap="{SBATCH_WRAP}"'
 
 
 def parse_test_output(output, returncode, command):

@@ -62,6 +62,10 @@ class RequestPlanTests(unittest.TestCase):
         self.assertEqual(probes.counts_for(3, 4, "all"), [1, 2, 3])
         self.assertEqual(probes.counts_for(1, 4, "whole_node"), [4])
 
+    def test_can_probe_one_gpu_and_the_whole_node(self):
+        self.assertEqual(probes.counts_for(8, 8, "one_or_node"), [1, 8])
+        self.assertEqual(probes.counts_for(1, 1, "one_or_node"), [1])
+
     def test_lists_gpu_requests_then_cpu_only(self):
         requests = probes.plan_requests({"h100": 4, "l40s": 2}, {"h100": 2})
 
@@ -69,8 +73,13 @@ class RequestPlanTests(unittest.TestCase):
             [request.label for request in requests],
             ["1x h100", "2x h100", "1x l40s", "2x l40s", "CPU only"],
         )
-        self.assertEqual(requests[1].directives(), ["--gres=gpu:h100:2"])
+        self.assertEqual(requests[1].directives(), ["--gpus-per-node=h100:2"])
         self.assertEqual(requests[-1].directives(), [])
+
+    def test_asks_for_untyped_gpus_without_a_model(self):
+        requests = probes.plan_requests({"gpu": 2}, {})
+
+        self.assertEqual(requests[1].directives(), ["--gpus-per-node=2"])
 
 
 class MaxGpuCountTests(unittest.TestCase):
@@ -174,7 +183,7 @@ class GridTests(unittest.TestCase):
             [
                 "--test-only",
                 "--qos=high",
-                "--gres=gpu:l40s:2",
+                "--gpus-per-node=l40s:2",
                 "-c8",
                 "--mem=64G",
                 "-t1-00:00:00",
@@ -201,14 +210,14 @@ class GridTests(unittest.TestCase):
             directives,
             [
                 "--test-only",
-                "--gres=gpu:l40s:2",
+                "--gpus-per-node=l40s:2",
                 "--exclusive",
                 "--mem=0",
                 "-t0-03:00:00",
             ],
         )
         self.assertEqual(settings.describe(), "sbatch --exclusive --mem=0")
-        self.assertEqual(Settings(mem="64G").describe(), "sbatch -c4 --mem=64G")
+        self.assertEqual(Settings(mem="64G").describe(), "sbatch -c32 --mem=64G")
 
     def test_adds_email_to_the_run_command_but_not_the_probe(self):
         grid = self.grid(
@@ -218,8 +227,8 @@ class GridTests(unittest.TestCase):
         self.assertEqual(
             grid.run_directives(1, 0),
             [
-                "-c4",
-                "--mem=32G",
+                "-c32",
+                "--mem=128G",
                 "-t0-03:00:00",
                 "--mail-type=BEGIN,END,FAIL",
                 "--mail-user=me@example.com",
@@ -228,7 +237,7 @@ class GridTests(unittest.TestCase):
         )
         self.assertEqual(
             grid.probe_directives(1, 0),
-            ["--test-only", "-c4", "--mem=32G", "-t0-03:00:00", "--constraint=ib"],
+            ["--test-only", "-c32", "--mem=128G", "-t0-03:00:00", "--constraint=ib"],
         )
         self.assertNotIn("--mail-user=me@example.com", self.grid().run_directives(1, 0))
 
@@ -249,10 +258,11 @@ class GridTests(unittest.TestCase):
             [
                 "sbatch",
                 "--test-only",
-                "--gres=gpu:l40s:2",
-                "-c4",
-                "--mem=32G",
+                "--gpus-per-node=l40s:2",
+                "-c32",
+                "--mem=128G",
                 "-t0-03:00:00",
+                "--output=/dev/null",
                 "--wrap=sleep infinity",
             ],
         )
@@ -263,8 +273,8 @@ class GridTests(unittest.TestCase):
         self.assertEqual(result.message, "")
         self.assertEqual(
             result.probe,
-            "sbatch --test-only --gres=gpu:l40s:2 -c4 --mem=32G -t0-03:00:00 "
-            '--wrap="sleep infinity"',
+            "sbatch --test-only --gpus-per-node=l40s:2 -c32 --mem=128G -t0-03:00:00 "
+            '--output=/dev/null --wrap="sleep infinity"',
         )
         self.assertEqual(result.output, scheduler_reply("2030-01-01T00:00:00")[1])
         self.assertEqual(shlex.split(result.command), list(result.run))
@@ -272,9 +282,9 @@ class GridTests(unittest.TestCase):
             shlex.split(result.command),
             [
                 "sbatch",
-                "--gres=gpu:l40s:2",
-                "-c4",
-                "--mem=32G",
+                "--gpus-per-node=l40s:2",
+                "-c32",
+                "--mem=128G",
                 "-t0-03:00:00",
                 "--output=/dev/null",
                 "--wrap=sleep infinity",
@@ -290,15 +300,15 @@ class GridTests(unittest.TestCase):
 
         self.assertEqual(
             host.streamed[0][1],
-            ["srun", "--test-only", "-c4", "--mem=32G", "-t0-03:00:00", "zsh"],
+            ["srun", "--test-only", "-c32", "--mem=128G", "-t0-03:00:00", "zsh"],
         )
         self.assertFalse(result.ok)
         self.assertEqual(result.message, "nope")
         self.assertEqual(
-            result.probe, "srun --test-only -c4 --mem=32G -t0-03:00:00 zsh"
+            result.probe, "srun --test-only -c32 --mem=128G -t0-03:00:00 zsh"
         )
         self.assertEqual(result.output, "srun: error: nope.")
-        self.assertEqual(result.command, "srun -c4 --mem=32G -t0-03:00:00 --pty zsh")
+        self.assertEqual(result.command, "srun -c32 --mem=128G -t0-03:00:00 --pty zsh")
 
     def test_runs_every_cell_and_reports_each_result(self):
         grid = self.grid(max_wall=180)
@@ -374,7 +384,7 @@ class BuildGridTests(unittest.TestCase):
             [request.label for request in grid.requests],
             ["1x L40S", "2x L40S", "CPU only"],
         )
-        self.assertEqual(grid.requests[0].directives(), ["--gres=gpu:l40s:1"])
+        self.assertEqual(grid.requests[0].directives(), ["--gpus-per-node=l40s:1"])
         self.assertEqual(grid.walltimes, [180])
         self.assertEqual(grid.max_wall, 120)
         self.assertEqual(grid.shell, "zsh")
@@ -405,14 +415,14 @@ class BuildGridTests(unittest.TestCase):
             grid.probe_directives(0, 0),
             [
                 "--test-only",
-                "--gres=gpu:h100:4",
+                "--gpus-per-node=h100:4",
                 "--exclusive",
                 "--mem=0",
                 "-t0-03:00:00",
             ],
         )
         self.assertEqual(
-            grid.run_directives(1, 0), ["-c4", "--mem=32G", "-t0-03:00:00"]
+            grid.run_directives(1, 0), ["-c32", "--mem=128G", "-t0-03:00:00"]
         )
         self.assertTrue(grid.gpus_by_node)
         self.assertFalse(
@@ -425,6 +435,45 @@ class BuildGridTests(unittest.TestCase):
         self.assertFalse(whole.gpus_by_node)
         self.assertEqual(
             whole.run_directives(1, 0), ["--exclusive", "--mem=0", "-t0-03:00:00"]
+        )
+
+    def test_leaves_cpus_and_memory_to_a_site_that_sizes_them_by_gpu(self):
+        # Trillium GPU: one GPU or a whole node, and --mem is refused.
+        nodes = [{"name": "a", "cfg_gpus": {"h100": 4}, "partitions": ["gpu"]}]
+        partitions = [{"name": "gpu", "max_time": 180, "usable": True}]
+        snap = Mock(nodes=nodes, partitions=partitions, gpu_names={})
+        snap.limits.return_value = []
+        info = snapshot.ClusterInfo("grillium", "1", "me", "login", None)
+        profile = profiles.Profile(
+            "trillium-gpu", gpu_counts="one_or_node", resources="by_gpu"
+        )
+
+        grid = probes.build_grid(snap, Scope(), Settings(), profile, info)
+
+        self.assertEqual(
+            [request.label for request in grid.requests],
+            ["1x h100", "4x h100", "CPU only"],
+        )
+        self.assertEqual(
+            grid.probe_directives(0, 0),
+            ["--test-only", "--gpus-per-node=h100:1", "-t0-03:00:00"],
+        )
+        # CPU only keeps the request's CPUs and memory.
+        self.assertEqual(
+            grid.run_directives(2, 0), ["-c32", "--mem=128G", "-t0-03:00:00"]
+        )
+        self.assertTrue(grid.sized_by_gpu)
+        self.assertFalse(
+            probes.build_grid(snap, Scope(), Settings(), GENERIC, info).sized_by_gpu
+        )
+        # A whole node still asks for every CPU and all the memory.
+        whole = probes.build_grid(
+            snap, Scope(), Settings(whole_node=True), profile, info
+        )
+        self.assertFalse(whole.sized_by_gpu)
+        self.assertEqual(
+            whole.run_directives(0, 0),
+            ["--gpus-per-node=h100:4", "--exclusive", "--mem=0", "-t0-03:00:00"],
         )
 
 

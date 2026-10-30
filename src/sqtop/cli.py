@@ -10,7 +10,8 @@ def find_clusters():
     """This cluster, if Slurm runs here, then each cluster with an ssh host.
 
     The local cluster is detected from `scontrol show config`; a configured
-    remote with the same name is skipped, since it is already shown.
+    remote with the same name is skipped, since it is already shown. Empty
+    on a machine without Slurm and with no such cluster in the config.
     """
     local = hosts.Local()
     config = local.run(slurm.CONFIG_COMMAND)
@@ -39,6 +40,7 @@ def main(argv=None):
             "Slurm cluster you are logged in to; clusters with an ssh host in "
             f"{config} get a tab that connects when opened, Config edits that "
             "config, and Email sends the dashboard hourly through its [smtp]. "
+            "Without Slurm here or such a cluster, it opens on Config to add one. "
             "Prints a text report of this cluster when output is not a terminal."
         ),
     ).parse_args(argv)
@@ -48,16 +50,17 @@ def main(argv=None):
         mail = profiles.load_mail()
     except ValueError as error:
         sys.exit(f"sqtop: {profiles.short_path(profiles.CONFIG_PATH)}: {error}")
-    if not clusters:
-        sys.exit(
-            "sqtop: Slurm is not available here ('scontrol' failed), and no "
-            f"cluster in {config} has an ssh host."
-        )
     settings = probes.Settings()
     if mail is not None:
         settings = probes.Settings(mail_user=mail[0], mail_type=mail[1])
 
     if not sys.stdout.isatty():
+        if not clusters:
+            sys.exit(
+                "sqtop: Slurm is not available here ('scontrol' failed), and no "
+                f"cluster in {config} has an ssh host: run sqtop in a terminal "
+                "and add one with Config."
+            )
         # Like the dashboard at startup, the report covers the cluster this
         # runs on; remote ones only when Slurm is not available here.
         reported = [c for c in clusters if c.host.ssh is None] or clusters
@@ -65,6 +68,7 @@ def main(argv=None):
         return
 
     # Textual is only imported for the dashboard, keeping the report fast.
+    # Without a cluster to show, it opens on Config to add one with an ssh host.
     from .tui import SqtopApp
 
     SqtopApp(clusters, settings).run()
