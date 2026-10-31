@@ -331,6 +331,17 @@ uvx ruff check src tests
 
 See [AGENTS.md](AGENTS.md) for the code layout and site-specific Slurm quirks.
 
+To release, bump the version and push a tag for it; the
+[release workflow](.github/workflows/release.yml) builds the package, publishes it to
+PyPI and creates the GitHub release, with the tag message's body as its notes:
+
+```bash
+uv version --bump patch          # or minor/major; updates pyproject.toml and uv.lock
+git commit -am "Release $(uv version --short)"
+git tag -a "v$(uv version --short)" -m "sqtop $(uv version --short)" -m "What changed..."
+git push origin main "v$(uv version --short)"
+```
+
 ## License
 
 MIT; see [LICENSE](LICENSE).

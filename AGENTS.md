@@ -19,6 +19,7 @@
 - [src/sqtop/report.py](src/sqtop/report.py) — the text report printed when output is not a terminal; `print_cluster` prints one cluster's and returns its snapshot
 - [src/sqtop/mailer.py](src/sqtop/mailer.py) — the hourly email: builds it (`digest`, `job_changes`, `compose`), sends it (`send`) and keeps the thread and last jobs in `~/.local/state/sqtop/mail.json` (`send_report`); `SqtopApp` runs it on a thread worker from an hourly timer
 - [tests/](tests/) — `unittest` suite; one module per source module, plus `fakes.py` (`FakeHost`, canned command output)
+- [.github/workflows/release.yml](.github/workflows/release.yml) — on a pushed `v*` tag: checks it matches `pyproject.toml`'s version, builds, publishes to PyPI by trusted publishing (no token; the `pypi` environment) and creates the GitHub release with the tag message's body and generated notes. Actions are pinned by commit, since the job can publish
 
 ## Commands
 
