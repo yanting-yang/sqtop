@@ -41,7 +41,7 @@ Note the `-t tests` on the test command: `tests/` has no `__init__.py`, so disco
 
 ### Supporting a new cluster
 
-Usually nothing is needed: the cluster name comes from `scontrol show config`, and partitions, GPU types, time tiers, accounts and limits are all read from Slurm. Add a profile only for rules Slurm does not report, as a `[clusters.<ClusterName>]` table in the user's config (a row in the form). The README's **Other clusters** section records the known clusters' rules; add a new cluster's there too:
+Usually nothing is needed: the cluster name comes from `scontrol show config`, and partitions, GPU types, time tiers, accounts and limits are all read from Slurm. Add a profile only for rules Slurm does not report, as a `[clusters.<ClusterName>]` table in the user's config (a row in the form). The README's **Clusters** section (under Configuration) lists the clusters checked with sqtop and their profiles; add a new cluster there too:
 
 - `gpu_counts` — `pow2` (default), `all`, `whole_node` for sites that reject partial GPU nodes (`tamia`), or `one_or_node` (1 GPU and the whole node) for sites that take only those (`trillium-gpu`). `whole_node` also makes each GPU request take its whole node (`Request.whole_node`: `--exclusive --mem=0`), since holding every GPU with only the request's few CPUs and memory would waste the node.
 - `resources` — `request` (default) or `by_gpu`: GPU requests leave out `-c`/`--mem` (`Request.by_gpu`), for sites that size CPUs and memory by GPU and refuse `--mem` (`trillium-gpu`, whose filter also requires `--gpus-per-node`).

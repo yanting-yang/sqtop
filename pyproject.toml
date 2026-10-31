@@ -1,12 +1,12 @@
 [project]
 name = "sqtop"
 version = "0.2.1"
-description = "Slurm dashboard: partitions, account/QOS limits and estimated start times"
+description = "htop for Slurm: partitions, account/QOS limits, estimated start times and your jobs, across clusters over ssh"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = "==3.13.*"
-keywords = ["slurm", "hpc", "tui", "dashboard", "squeue", "sbatch"]
+keywords = ["slurm", "hpc", "tui", "textual", "dashboard", "squeue", "sbatch", "gpu"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",

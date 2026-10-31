@@ -1,87 +1,58 @@
 # sqtop
 
-A terminal dashboard for Slurm, in the spirit of
-[hunoutl/slurmtop](https://github.com/hunoutl/slurmtop) and
-[slmtop](https://github.com/dawnmy/slmtop), that answers "where can I run, under which
-account/QOS, and when would it start?", and can email you that report every hour while
-it runs.
+[![PyPI](https://img.shields.io/pypi/v/sqtop)](https://pypi.org/project/sqtop/)
+[![Python](https://img.shields.io/pypi/pyversions/sqtop)](https://pypi.org/project/sqtop/)
+[![License: MIT](https://img.shields.io/github/license/yanting-yang/sqtop)](https://github.com/yanting-yang/sqtop/blob/main/LICENSE)
 
-```
- killarney  fir  tamia
-╸━━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- someone@klogin02  killarney  Slurm 25.05.9                                                              updated 13:49:06 (10s ago) · probed 13:49:06
-╭─ Partitions ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Partition        Use  CPU/node  Mem/node  GPU/node  Load           Free         Idle   Pend  Max                                                   │
-│ gpubase_h100_b1  yes  48/96     2011G     8x h100   ██████▒▒  75%  4/80 h100    0/10   117   0-03:00:00                                            │
-│ gpubase_h100_b2  yes  48/96     2011G     8x h100   ███████▒  86%  1/64 h100    0/8    63    0-12:00:00                                            │
-│ gpubase_interac  yes  64        502G      4x l40s   ███████░  90%  6/100 l40s   0/25   1     0-03:00:00                                            │
-│ gpubase_l40s_b1  yes  64        502G      4x l40s   ███████▒  90%  18/672 l40s  1/168  2571  0-03:00:00                                            │
-│ gpubase_l40s_b3  yes  64        502G      4x l40s   ███████▒  88%  8/336 l40s   1/84   90    1-00:00:00                                            │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Start estimates · aip-abc123/normal ──────────────────────────────────────────────────╮╭─ Accounts & QOS ─────────────────────────────────────────╮
-│ Request   0-03:00:00    0-12:00:00    1-00:00:00    3-00:00:00    7-00:00:00           ││ Account      QOS      Jobs  GPUs  Wall        FS         │
-│ 1x h100     0-22:05:00    1-05:38:00    3-02:01:00    7-23:35:00   39-23:02:00         ││ aip-abc123*  interac  0/1   ∞     0-03:00:00  0.14       │
-│ 8x h100     1-04:16:00    1-10:21:00    3-06:44:00    8-11:56:00   40-05:13:00         ││ aip-abc123*  normal*  0/∞   ∞     ∞           0.14       │
-│ 1x l40s     0-02:12:00    0-01:27:00    0-01:48:00    0-19:17:00    7-15:47:00         │╰────────────────── * left out of commands · enter: probe ─╯
-│ 4x l40s     0-02:12:00    0-02:17:00    0-01:48:00    0-21:38:00    7-18:03:00         │╭─ My jobs ────────────────────────────────────────────────╮
-│ CPU only    0-02:12:00    0-01:27:00    0-01:48:00    0-19:17:00    7-15:47:00         ││ Job    Name   St  Start        Time  Nodes  Reason       │
-│                                                                                        ││ No jobs in the queue                                     │
-╰─────────────────────────────────────────────────────────────── sbatch -c32 --mem=128G ─╯╰──────────────────────────────────────────────────────────╯
-╭─ Details ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ gpubase_h100_b1  UP  usable  · max time 0-03:00:00 · priority tier 1                                                                               │
-│ Nodes 10 (5 mixed, 3 allocated, 2 unavailable) · pending jobs 117                                                                                  │
-│ 9 nodes: 48 CPUs / 2011 GB / 8x h100 · 1 node: 96 CPUs / 2011 GB / 8x h100                                                                         │
-│ CPUs 104 free / 328 allocated / 96 unavailable of 528 · Memory 12045 GB free of 20117 GB                                                           │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Refresh   Re-probe   Edit request   Email: off   Config   Quit
-```
+`htop` for Slurm: a terminal dashboard that answers **where can I run, under which
+account/QOS, and when would my job start?**, on the cluster you are logged in to and on
+any cluster you can reach over ssh.
 
-## Requirements
+![sqtop on Killarney: partitions, start estimates per request size and walltime, account/QOS limits, queued jobs and details](https://raw.githubusercontent.com/yanting-yang/sqtop/main/docs/screenshot.svg)
 
-- [uv](https://docs.astral.sh/uv/) (it fetches Python 3.13 if you do not have it)
-- A Slurm login node (`scontrol` and `squeue` on `PATH`; estimates need `sbatch`/`srun`),
-  or ssh access to one from your own machine ([Remote clusters](#remote-clusters))
+- **Start-time estimates.** Each request size (each GPU type up to your cap, then CPU
+  only) is test-submitted at every partition time limit with `sbatch --test-only`, so
+  you see when 1 GPU for 3 hours would start next to 8 GPUs for a week.
+- **Partitions and hardware.** Load, free GPUs and CPUs, idle nodes and pending jobs per
+  partition or per kind of node, and which partitions your accounts may use.
+- **Your limits.** Every account/QOS pair you can use, with its job, GPU and wall-time
+  caps and your fair share, read from Slurm even where `sacctmgr` does not work.
+- **Your jobs.** Running and pending jobs, with expected start times and planned nodes.
+- **One click to act.** Submit any estimate's `sbatch` command, copy any command, or
+  release a job, each after you confirm.
+- **Several clusters in one window.** A tab per cluster over ssh, from a login node or
+  from your laptop. sqtop reuses your ssh connections and never asks for a password.
+- **Hourly email** of the whole report while the dashboard runs.
 
-## Usage
+Everything is read from Slurm, so it works on any cluster; the few site rules Slurm
+cannot report go in a [config file](#configuration).
+
+## Quick start
+
+You need [uv](https://docs.astral.sh/uv/), which fetches Python 3.13 if you do not have it.
 
 ```bash
-uvx sqtop                  # run it from PyPI: one tab per cluster, this one first
-uvx sqtop > report.txt     # text report of this cluster when not a terminal
-uv tool install sqtop      # or install it once, then just type `sqtop`
-
-# From a checkout
-uv run sqtop
+uvx sqtop                 # run the latest release
+uv tool install sqtop     # or install it, then run `sqtop`
+sqtop > report.txt        # when output is not a terminal, print a text report once
 ```
 
-There are no options. The first tab is the cluster you are logged in to (from
-`ClusterName` in `scontrol show config`), and it is the only one checked at startup.
-Every other cluster with an `ssh` host in the [config file](#configuration) (Fir,
-Killarney and Tamia) gets a tab too, but is only contacted, over ssh, once you open its
-tab (click it). Every probe starts as 32 CPUs and 128 GB at each partition
-time limit with `sbatch`; change a tab's request with `Edit request` (CPUs, memory,
-walltimes, extra `sbatch` options), and click the command under Start estimates to
-switch between `sbatch` and `srun`. The visible tab refreshes every minute and re-probes
-every five. Click `Email: off` to email the report every hour until you quit
-([Hourly email](#hourly-email)). Everything is a click: see [Mouse](#mouse).
+- **On a Slurm login node**, sqtop shows that cluster. It needs `scontrol` and `squeue`;
+  estimates need `sbatch` or `srun`.
+- **On your own machine**, it opens on the `Config` form: add a cluster's name and the
+  ssh host of its login node, click `Save`, and its tab opens. See
+  [Remote clusters](#remote-clusters).
 
-Probes use `--test-only`, so nothing is submitted or cancelled until you confirm a
-Submit or Release (see below), and it is safe to run on a shared login node. Run it on
-the login node: on a compute node, such as inside an interactive job, `srun` probes fail
-with "Requested operation is presently disabled".
+There are no command-line options. Probes use `--test-only`, so sqtop is safe on a
+shared login node: nothing is submitted or cancelled until you confirm it in a dialog.
 
-### Remote clusters
+## Remote clusters
 
-Remote tabs run Slurm on the cluster's login node through `ssh`, with your
-`~/.ssh/config` (aliases, users, keys). Nothing is sent to a remote cluster until you
-open its tab, and only the visible tab refreshes. Commands get the Slurm setup of your
-login shell there (`PATH`, and `SLURM_CONF` where a module sets it, as on Killarney) and
-run from your `$SCRATCH`, since some clusters (Killarney) refuse jobs submitted from
-`/home`.
-
-sqtop also runs where Slurm is not installed, such as your laptop: then it shows only
-remote tabs. The first time, with no cluster in your [config](#configuration), it opens
-on the `Config` form: add the cluster's name and the ssh host of its login node, click
-`Save`, and its tab opens and connects.
+Every cluster with an `ssh` host in your config gets a tab. sqtop runs Slurm on its
+login node through `ssh` with your `~/.ssh/config` (aliases, users, keys), contacts it
+only once you open its tab, and refreshes only the visible tab. Commands there get your
+login shell's Slurm setup (`PATH`, and `SLURM_CONF` where a module sets it) and run from
+your `$SCRATCH`, since some clusters refuse jobs submitted from `/home`.
 
 sqtop never asks for a password or MFA. For a cluster that needs one, let ssh share
 connections and log in with `ssh` in another terminal first; sqtop reuses that
@@ -95,23 +66,21 @@ Host *.alliancecan.ca
     ControlPersist 4h
 ```
 
-After `ssh fir.alliancecan.ca`, the connection stays open for 4 hours after your last
-session there closes. With keys that log in without a prompt, nothing is needed:
-sqtop opens its own shared connection, which closes 10 minutes after the last use.
-A tab that cannot connect shows ssh's error and how to connect; then click `Refresh`.
+The connection then stays open for 4 hours after your last session there closes. With
+keys that log in without a prompt, nothing is needed: sqtop opens its own shared
+connection, which closes 10 minutes after its last use. A tab that cannot connect shows
+ssh's error and how to connect; log in, then click `Refresh`.
 
-The text report printed when output is not a terminal covers the cluster you are on;
-it covers the remote ones only where Slurm is not available.
+Commands for a remote cluster are shown with its host as the prompt
+(`fir.alliancecan.ca$ sbatch ...`): run them there. The text report covers the cluster
+you are on, and the remote ones only where Slurm is not available.
 
-Each refresh of a remote tab is one ssh session, and the cache of limits is fetched
-only for your accounts and QOS, because login nodes can take seconds to start a
-session and the full cache can be tens of MB. Commands for a remote cluster are shown
-with its host as the prompt (`fir.alliancecan.ca$ sbatch ...`): run them there.
+## Using the dashboard
 
-### Mouse
-
-sqtop has no keyboard shortcuts: everything is a click. The bar at the bottom holds
-the dashboard's actions, and each dialog closes with its own buttons.
+Each tab probes a request of 32 CPUs and 128 GB with `sbatch` at every partition time
+limit; change it with `Edit request`. The visible tab refreshes every minute and
+re-probes every five. There are no keyboard shortcuts: everything is a click, and each
+dialog closes with its own buttons.
 
 | Click | Action |
 | --- | --- |
@@ -120,154 +89,105 @@ the dashboard's actions, and each dialog closes with its own buttons.
 | a highlighted Accounts & QOS row | Probe with that account/QOS |
 | the Partitions title | Switch between Partitions and Nodes by hardware |
 | the account/QOS above the estimates | Probe with the next account/QOS |
-| the command under Start estimates | Switch between `sbatch` and `srun` probes |
+| the command under the estimates | Switch between `sbatch` and `srun` probes |
 | `Submit` in Details | Submit the selected `sbatch` request, after you confirm |
 | `Copy` after a command in Details | Copy that command |
 | `Release` in a job's Details | Release the job with `scancel`, after you confirm |
 | `Refresh` / `Re-probe` | Refresh everything / re-probe now |
-| `Edit request` | Edit the probe request: whole node, CPUs, memory, walltimes, extra options such as `--partition` or `--constraint`, and the email address (blank for none) |
-| `Email: off` / `Email: on` | Email the report now and every hour until you quit / stop; the label says which is on |
-| `Config` | Edit the [config](#configuration) in a form; saving writes the file and applies it |
+| `Edit request` | Edit the probe request: whole node, CPUs, memory, walltimes, extra options such as `--partition` or `--constraint`, and the job email address |
+| `Email: off` / `Email: on` | Email the report now and every hour until you quit / stop |
+| `Config` | Edit the [config](#configuration) in a form; saving applies it at once |
 | `Quit` | Quit |
+
+The bottom bar also shows which version of sqtop is running.
 
 ## Reading the dashboard
 
-- **Partitions**: `Use` says whether your accounts, QOS and Unix groups may submit
-  there. `CPU/node`, `Mem/node` and `GPU/node` are each node's hardware (CPUs exclude
-  reserved cores); a partition with two kinds of node shows both (`48/96`), with more
-  a range. `Load` is the share of GPUs (CPUs on CPU-only partitions) in use: `█`
-  allocated, `▒` unavailable (down, drained, reserved), `░` free. `Free` is free/total
-  per GPU type, `Idle` counts wholly idle nodes, `Pend` counts pending jobs from all
-  users, and `Max` is the time limit. Details list each kind of node with its count,
-  then memory, `AllowAccounts`/`AllowQos`, the partition QOS and priority tier.
-- **Accounts & QOS**: every account/QOS pair you can submit under; `*` marks what
-  commands leave out because Slurm picks it anyway: the account when it is your only
-  one (with several, commands always name it, since sites such as Fir require that
-  for GPU jobs) and the account's default QOS. `Jobs` is your running jobs over the tightest per-user
-  cap, `GPUs` and `Wall` are the tightest GPU and wall-time caps from any scope, and
-  `FS` is your fair-share factor. Details list every cap with its usage: QOS per user,
-  per account, per job and per node, plus association limits on you and your account.
-  `∞` means no cap, `?` unknown.
-- **Start estimates** (titled with the account/QOS probed): rows are request sizes
-  (each GPU type up to the tightest GPU cap, then CPU only), columns are walltimes. Each
-  cell is how long until the scheduler expects the job to start: `now`, a wait such as
-  `0-10:54:00`, `no` when it cannot run (Details gives the reason), or `-` above the
-  account/QOS wall-time cap. The earliest start in each row is underlined. Here a 1-day
-  L40S job starts sooner than a 3-hour one, because short jobs queue in the busier `b1`
-  partition.
-- **Details** for an estimate shows the partition it would land in, the probe that
-  produced the estimate with the scheduler's reply, and the command to submit the same
-  request; click `Copy` after either to copy it. The probe has only what the estimate
-  depends on; the submit command drops `--test-only` and adds your email options. Both
-  name `--output=/dev/null`, so no `slurm-<jobid>.out` file is left behind and sites
-  that refuse output to a read-only `/home` accept them. GPUs are asked for with
-  `--gpus-per-node`, which some sites accept where they refuse `--gres`.
-  `--account`/`--qos` are left out when Slurm would pick them anyway.
-- **Submit**: click the `Submit` label in Details to run an `sbatch` command, after a
-  dialog shows it and asks you to confirm; `Cancel` submits nothing. The job is submitted in the background (on the cluster's login node
-  for a remote tab), its id pops up, and My jobs refreshes; it holds the allocation with
-  `sleep infinity` until the time limit; its details in My jobs show the `scancel`
-  command that releases it. An `srun` command opens an interactive shell, so `Submit`
-  is not clickable for it: click `Copy` and run it in a terminal. A request the probe
-  was refused for is not submitted.
-- **My jobs** lists your queued and running jobs: `Partition` is where it runs or was
-  submitted to (several for some pending jobs), `Start` is when a job started, or when
-  the scheduler expects a pending one to (`-` until it has planned it), `Nodes` is where
-  it runs, or the nodes planned for a pending job (dimmed, as they can still change),
-  and `Reason` is why a pending job waits. A job's details show the command that
-  attaches a shell to it (`srun --jobid=<id> --overlap --pty <shell>`, once it runs)
-  and the one that releases it (`scancel <id>`), each with `Copy`. Clicking `Release`
-  runs `scancel` after a dialog asks you to confirm (Cancel is selected first): a
-  running job is killed and its allocation released, a pending one leaves the queue.
+- **Partitions.** `Use` says whether your accounts, QOS and Unix groups may submit
+  there. `CPU/node`, `Mem/node` and `GPU/node` describe each node (CPUs exclude reserved
+  cores; two kinds of node show as `48/96`). `Load` is the share of GPUs (CPUs on
+  CPU-only partitions) in use: `█` allocated, `▒` unavailable (down, drained, reserved),
+  `░` free. `Free` is free/total per GPU type, `Idle` counts wholly idle nodes, `Pend`
+  counts everyone's pending jobs, and `Max` is the time limit.
+- **Start estimates**, titled with the account/QOS probed. Rows are request sizes,
+  columns are walltimes, and each cell is how long until the scheduler expects the job to
+  start: `now`, a wait such as `0-10:54:00`, `no` when it cannot run (Details gives the
+  reason), or `-` above the account/QOS wall-time cap. The earliest start in each row is
+  underlined: in the screenshot a 1-day L40S job starts sooner than a 3-hour one,
+  because short jobs queue in the busier `b1` partition.
+- **Accounts & QOS.** Every account/QOS pair you can submit under. `*` marks what
+  commands leave out because Slurm picks it anyway. `Jobs` is your running jobs over the
+  tightest per-user cap, `GPUs` and `Wall` are the tightest GPU and wall-time caps from
+  any scope, and `FS` is your fair-share factor. `∞` means no cap, `?` unknown.
+- **My jobs.** Your queued and running jobs. `Start` is when a job started, or when the
+  scheduler expects a pending one to; `Nodes` is where it runs, or the nodes planned for
+  a pending job (dimmed, as they can still change); `Reason` is why it waits.
+- **Details** follows the selection. For an estimate it shows the partition the job
+  would land in, the probe with the scheduler's reply, and the command to submit the
+  same request, each with `Copy`. For a job it shows the command that attaches a shell
+  to it (`srun --jobid=<id> --overlap --pty <shell>`) and the one that releases it.
+
+Submitted jobs hold their allocation with `sleep infinity` until the time limit and
+write no output file (`--output=/dev/null`). An `srun` command opens an interactive
+shell, so it cannot be submitted from the dashboard: copy it and run it in a terminal.
 
 ## Configuration
 
-All settings live in one file, `~/.config/sqtop/config.toml`
-(`$XDG_CONFIG_HOME/sqtop/config.toml` if you set that): email (`[mail]`, `[smtp]`)
-and cluster profiles (`[clusters.<name>]`). Click `Config` in the dashboard to edit it
-in a form: the job email address and states, the hourly email's server, port, sender,
-password and recipient, and one row per cluster (name, GPU counts picked from `pow2`,
-`all`, `whole_node` and `one_or_node`, CPU/memory picked from `request` and `by_gpu`,
-and ssh host) with `Add cluster` and `Remove`. `Cancel` closes
-it unchanged. `Save` checks the settings (a problem is shown under the form, which stays
-open), writes the file privately (`chmod 600`, since it holds the SMTP password) and
-applies what changed without a restart: clusters added get tabs and removed ones lose
-theirs, changed profiles and `[mail]` settings are probed again, and the hourly email
-switches to a changed `[smtp]`.
+All settings live in `~/.config/sqtop/config.toml` (`$XDG_CONFIG_HOME/sqtop/config.toml`
+if you set that). Click `Config` to edit it in a form; `Save` checks the settings, writes
+the file privately (`chmod 600`, since it can hold an SMTP password) and applies what
+changed without a restart. The file is plain TOML, so you can also edit it by hand.
 
-Without the file, `sqtop` shows only the cluster you are logged in to, with no email
-settings; where Slurm is not available, it opens on the form to add a remote cluster.
-The file is plain TOML, so you can also edit it by hand; the form rewrites it without
-comments.
+### Clusters
 
-### Other clusters
+Partitions, GPU types, time limits, accounts and limits all come from Slurm. A cluster
+profile records only an ssh host and the rules Slurm cannot report, keyed by the cluster
+name (`ClusterName` in `scontrol show config`):
 
-Nothing is hardcoded per cluster: partitions, GPU types, time tiers, accounts and
-limits are read from Slurm. A profile records only what Slurm cannot report, keyed by
-the cluster name. To add a cluster, or a tab for one you are not logged in to, add a
-row in the config form (`Config`); in the file it is a table:
+| Setting | Values | Effect |
+| --- | --- | --- |
+| `ssh` | a host or `~/.ssh/config` alias | A tab for the cluster from anywhere |
+| `gpu_counts` | `pow2` (default: 1, 2, 4, ...), `all`, `whole_node`, `one_or_node` | GPU counts to probe. `whole_node` probes only whole nodes and asks for all of their CPUs and memory (`--exclusive --mem=0`); `one_or_node` probes 1 GPU and the whole node |
+| `resources` | `request` (default), `by_gpu` | `by_gpu` leaves `-c`/`--mem` out of GPU requests, for sites that size them by GPU and refuse `--mem` |
 
-```toml
-[clusters.mycluster]          # the ClusterName from `scontrol show config`
-gpu_counts = "all"            # "pow2" (1, 2, 4, ... default), "all", "whole_node"
-                              # (GPU jobs then take whole nodes: --exclusive --mem=0)
-                              # or "one_or_node" (1 GPU and the whole node)
-resources = "by_gpu"          # "request" (default): GPU jobs ask for the CPUs and
-                              # memory in Edit request; "by_gpu": they leave -c/--mem
-                              # out, for sites that size them by GPU and refuse --mem
-ssh = "login.mycluster.org"   # a tab for it from anywhere; host or ~/.ssh/config alias
-```
+These Alliance clusters have been checked with sqtop:
 
-For example, the Alliance clusters this was written on need no rules, only an `ssh`
-host for a tab, except `tamia`, which allocates GPUs by whole node, and Trillium's GPU
-subcluster (its own login node, `trillium-gpu`), which takes one GPU or whole nodes,
-gives each GPU its share of CPUs and memory, and refuses `--mem`:
+| Cluster | Profile |
+| --- | --- |
+| Fir, Killarney, Narval, Nibi, Vulcan | `ssh` only |
+| Tamia | `gpu_counts = "whole_node"`: GPUs are allocated by whole node |
+| Trillium GPU | `gpu_counts = "one_or_node"`, `resources = "by_gpu"`: one GPU or whole nodes, with CPUs and memory by GPU |
 
 ```toml
 [clusters.fir]
 ssh = "fir.alliancecan.ca"
 
-[clusters.killarney]
-ssh = "killarney.alliancecan.ca"
-
 [clusters.tamia]
 ssh = "tamia.alliancecan.ca"
 gpu_counts = "whole_node"
 
-[clusters.trillium-gpu]
+[clusters.trillium-gpu]             # Trillium's GPU subcluster has its own login node
 ssh = "trillium-gpu.alliancecan.ca"
 gpu_counts = "one_or_node"
 resources = "by_gpu"
 ```
 
-Narval, Nibi, Rorqual and Vulcan need no rules either. Trillium's GPU nodes report
-their GPUs untyped in `CfgTRES`; sqtop names them from the nodes' `Gres=` (`h100`,
-`h200`, `b200`), so each model gets its own rows.
-
 The walltimes probed are not a setting: they are the distinct time limits of the
-partitions you can use, which is where routing changes, and `Edit request` overrides
-them for a session.
+partitions you can use, which is where routing changes. `Edit request` overrides them
+for a session.
 
 ### Whole nodes
 
-Tick "Whole node" in the request editor (`Edit request`) to probe whole nodes: every command then
-asks for `--exclusive --mem=0` (every CPU and all the memory) instead of `-c`/`--mem`,
-and the GPU rows are each type's full node, such as `8x h100` or `4x l40s`. Untick it
-to go back to the CPUs and memory in the editor.
+Tick "Whole node" in `Edit request` to probe whole nodes: every command asks for
+`--exclusive --mem=0` (every CPU and all the memory) instead of `-c`/`--mem`, and the
+GPU rows are each type's full node, such as `8x h100`. Where a profile sets
+`gpu_counts = "whole_node"`, the GPU rows always do this and the estimates note "GPUs by
+whole node"; with `resources = "by_gpu"` they note "GPU rows: CPUs and memory by GPU".
 
-On clusters that only allocate GPUs by node (`gpu_counts = "whole_node"`, such as
-Tamia) the GPU rows always ask for the whole node this way, so a job that holds all of
-a node's GPUs also gets its CPUs and memory; the CPU-only row keeps the editor's
-values. The estimates panel then notes "GPUs by whole node".
+### Job emails
 
-On clusters that size CPUs and memory by GPU (`resources = "by_gpu"`, such as Trillium
-GPU) the GPU rows leave `-c`/`--mem` out instead, and the panel notes "GPU rows: CPUs
-and memory by GPU".
-
-### Email notifications
-
-The `[mail]` table in your config (`Config`) adds `--mail-type` and `--mail-user` to every
-command, so a job you submit from one emails you when it starts, ends or fails:
+A `[mail]` table adds `--mail-type` and `--mail-user` to every command you submit or
+copy (probes leave them out), so a job emails you when it starts, ends or fails:
 
 ```toml
 [mail]
@@ -275,18 +195,13 @@ user = "you@example.com"
 type = "BEGIN,END,FAIL"       # any of sbatch's --mail-type values
 ```
 
-Only the commands to submit carry them: probes leave them out, since email does not
-change when a job would start. Remove the table to leave email out, or clear the
-address for a session with `Edit request`.
+Clear the address in `Edit request` to leave email out for a session.
 
 ### Hourly email
 
-Click `Email: off` in the dashboard to email the report now and every hour until you
-quit `sqtop` (or click `Email: on` to stop). Each email covers the cluster you are on and every
-remote tab you have opened, with each tab's current request. Every email has the subject
-`sqtop` and replies to the first one, so your mail client keeps them in one
-conversation instead of separate emails. Each starts with your job counts and what
-happened since the previous email, followed by the text report:
+Click `Email: off` to email the report now and every hour until you quit (click
+`Email: on` to stop). Each email covers the cluster you are on and every remote tab you
+have opened, and starts with your job counts and what happened since the last one:
 
 ```
 killarney: 1 running, 2 pending. Since 14:00:
@@ -295,7 +210,7 @@ killarney: 1 running, 2 pending. Since 14:00:
   6290112 (eval) submitted (Priority), expected to start 10-17 09:30
 ```
 
-The server is read from `[smtp]` in your config (`Config`) when you turn it on:
+The server comes from `[smtp]`:
 
 ```toml
 [smtp]
@@ -306,20 +221,24 @@ password = "..."
 recipient = "you@example.org"    # default: user in [mail]
 ```
 
-The bottom bar says whether the hourly email is on (`Email: on`) or off (`Email: off`).
-While it is on, the top bar shows when the next email goes out (`next email 16:37`),
-and marks it `(last failed)` if one could not be sent. The thread and the jobs last reported are kept
-in `~/.local/state/sqtop/mail.json`, so the next run of the dashboard continues the
-same conversation; delete the file to start a new one. Gmail starts a new conversation
-after 100 emails, about every four days.
+Every email has the subject `sqtop` and replies to the first, so your mail client keeps
+them in one conversation. While the email is on, the top bar shows when the next one goes
+out and marks it `(last failed)` if one could not be sent. The conversation and the jobs
+last reported are kept in `~/.local/state/sqtop/mail.json`; delete it to start a new
+conversation.
 
-### When `sacctmgr` fails
+## Troubleshooting
 
-On some login nodes `sacctmgr` fails with "Connection refused" because `slurmdbd` runs
-on the controller. Accounting is still enforced: `sqtop` reads limits from
-`scontrol show assoc_mgr` instead. Without `sacctmgr` it cannot list your QOS
-assignments, so it test-submits each cached account/QOS pair and hides the ones Slurm
-rejects.
+- **A remote tab shows an ssh error.** Log in with `ssh` in a terminal (see
+  [Remote clusters](#remote-clusters)), then click `Refresh`.
+- **`srun` probes fail with "Requested operation is presently disabled".** sqtop is
+  running on a compute node, such as inside an interactive job; run it on a login node.
+- **Every estimate is rejected for submitting from `/home`.** On a cluster you are
+  logged in to, sqtop submits from the directory you started it in: start it from
+  `/scratch` or `/project`. Remote tabs already run from `$SCRATCH`.
+- **`sacctmgr` fails with "Connection refused".** `slurmdbd` runs on the controller, but
+  accounting is still enforced. sqtop reads limits from `scontrol show assoc_mgr`
+  instead, and finds the account/QOS pairs you may use by test-submitting each one.
 
 ## Development
 
@@ -329,11 +248,13 @@ uv run python -m unittest discover -s tests -t tests
 uvx ruff check src tests
 ```
 
-See [AGENTS.md](AGENTS.md) for the code layout and site-specific Slurm quirks.
+See [AGENTS.md](https://github.com/yanting-yang/sqtop/blob/main/AGENTS.md) for the code
+layout and the Slurm quirks of the sites sqtop runs on.
 
-To release, bump the version and push a tag for it; the
-[release workflow](.github/workflows/release.yml) builds the package, publishes it to
-PyPI and creates the GitHub release, with the tag message's body as its notes:
+To release, bump the version and push a tag for it. The
+[release workflow](https://github.com/yanting-yang/sqtop/blob/main/.github/workflows/release.yml)
+builds the package, publishes it to PyPI and creates the GitHub release, with the tag
+message's body as its notes:
 
 ```bash
 uv version --bump patch          # or minor/major; updates pyproject.toml and uv.lock
@@ -344,4 +265,6 @@ git push origin main "v$(uv version --short)"
 
 ## License
 
-MIT; see [LICENSE](LICENSE).
+MIT; see [LICENSE](https://github.com/yanting-yang/sqtop/blob/main/LICENSE). sqtop is
+inspired by [hunoutl/slurmtop](https://github.com/hunoutl/slurmtop) and
+[slmtop](https://github.com/dawnmy/slmtop).
