@@ -42,7 +42,7 @@ from textual.widgets import (
 )
 from textual.worker import get_current_worker
 
-from . import hosts, mailer, probes, profiles, slurm, snapshot, views
+from . import __version__, hosts, mailer, probes, profiles, slurm, snapshot, views
 from .profiles import Profile
 
 REFRESH_SECONDS = 60
@@ -1166,6 +1166,7 @@ class ClusterView(Vertical):
             return []
         prompt = f"{self.host.ssh}$" if self.host.ssh else "$"
         shell = self.info.shell if self.info else slurm.login_shell()
+        # No --output: srun refuses --error/--input/--output with --pty.
         attach = shlex.join(
             ["srun", f"--jobid={job['id']}", "--overlap", "--pty", shell]
         )
@@ -1371,7 +1372,9 @@ class SqtopApp(App):
     TabPane { padding: 0; }
     #no-clusters { height: 1fr; padding: 1 2; }
     #topbar { height: 1; background: $panel; padding: 0 1; }
-    #actions { dock: bottom; height: 1; background: $panel; padding: 0 1; }
+    #bottombar { dock: bottom; height: 1; background: $panel; }
+    #actions { width: 1fr; padding: 0 1; }
+    #version { width: auto; padding: 0 1; color: $text-muted; }
     #identity { width: 1fr; }
     #status { width: auto; color: $text-muted; }
     #dashboard {
@@ -1480,7 +1483,10 @@ class SqtopApp(App):
                 with TabPane(cluster.name, id=f"cluster-{index}"):
                     yield ClusterView(cluster, self.settings, f"cluster-{index}")
         yield Static(self.no_clusters_text(), id="no-clusters")
-        yield Static(self.actions(), id="actions")
+        # The action bar, and which sqtop this is at its right end.
+        with Horizontal(id="bottombar"):
+            yield Static(self.actions(), id="actions")
+            yield Static(f"sqtop {__version__}", id="version")
 
     def on_mount(self):
         # App.query_one searches the screen on top, which is the request dialog

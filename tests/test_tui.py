@@ -1,4 +1,5 @@
 import dataclasses
+import importlib.metadata
 import io
 import smtplib
 import tempfile
@@ -12,6 +13,7 @@ from textual.widgets import Input, Select, TabPane
 from textual.widgets._select import SelectOverlay
 
 from fakes import FakeHost
+import sqtop
 from sqtop import hosts, probes, profiles, snapshot, tui
 
 from test_report import fake_probe, make_snapshot
@@ -461,6 +463,18 @@ class DashboardTests(TuiTestCase):
             self.assertIn(
                 "--gpus-per-node=l40s:1 -t0-03:00:00 ", self.detail_rows("Submit")[0]
             )
+
+    async def test_shows_its_version_beside_the_actions(self):
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.settle(pilot)
+            version = self.app.query_one("#version")
+
+            self.assertEqual(sqtop.__version__, importlib.metadata.version("sqtop"))
+            self.assertEqual(str(version.content), f"sqtop {sqtop.__version__}")
+            # On the action bar's row, at its right end.
+            self.assertEqual(version.region.y, self.app.action_bar.region.y)
+            self.assertEqual(version.region.right, 150)
+            self.assertNotIn("sqtop", self.actions())
 
     async def test_rejects_an_invalid_request(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
