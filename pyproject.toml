@@ -1,6 +1,6 @@
 [project]
 name = "sqtop"
-version = "0.2.1"
+version = "0.3.0"
 description = "htop for Slurm: partitions, account/QOS limits, estimated start times and your jobs, across clusters over ssh"
 readme = "README.md"
 license = "MIT"
