@@ -32,8 +32,6 @@ GENERIC_NOISE = (
 class Request:
     gpu: str | None = None
     count: int = 0
-    # How to show the GPU type; the full type still goes into --gpus-per-node.
-    name: str | None = dataclasses.field(default=None, compare=False)
     # Ask for every CPU and all the memory of the node, as GPU requests do
     # where GPUs are only allocated by node (`gpu_counts = "whole_node"`).
     whole_node: bool = False
@@ -43,7 +41,8 @@ class Request:
 
     @property
     def label(self):
-        return f"{self.count}x {self.name or self.gpu}" if self.gpu else "CPU only"
+        """The GPUs as `--gpus-per-node` names them: `h100:4`."""
+        return f"{self.gpu}:{self.count}" if self.gpu else "CPU only"
 
     def directives(self):
         """The GPUs on one node. `--gpus-per-node` rather than `--gres`, which
@@ -256,18 +255,17 @@ def max_gpu_counts(capacities, limits):
     return counts
 
 
-def plan_requests(capacities, ceilings, mode="pow2", names=None, resources="request"):
+def plan_requests(capacities, ceilings, mode="pow2", resources="request"):
     """Requests for each GPU type up to its ceiling, then CPU only.
 
     In `whole_node` mode each GPU request asks for its whole node: all of its
     GPUs, CPUs and memory. With `by_gpu` resources, GPU requests leave CPUs
     and memory to the site.
     """
-    names = names or {}
     whole_node = mode == "whole_node"
     by_gpu = resources == "by_gpu"
     requests = [
-        Request(gpu, count, names.get(gpu), whole_node, by_gpu)
+        Request(gpu, count, whole_node, by_gpu)
         for gpu, capacity in capacities.items()
         for count in counts_for(ceilings.get(gpu, capacity), capacity, mode)
     ]
@@ -326,7 +324,6 @@ def build_grid(snap, scope, settings, profile, info):
             max_gpu_counts(capacities, limits),
             # A whole node means all of its GPUs, whatever the profile probes.
             "whole_node" if settings.whole_node else profile.gpu_counts,
-            snap.gpu_names,
             profile.resources,
         ),
         walltimes=plan_walltimes(usable or snap.partitions, settings.walltimes),

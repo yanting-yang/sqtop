@@ -41,7 +41,7 @@ class ProfileTests(unittest.TestCase):
             "mail": {"user": "me@example.com", "type": "END"},
             "smtp": {"server": "mail.example.org", "port": 465, "password": 'p"w\\'},
             "clusters": {
-                "rcl": {"gpu_counts": "all"},
+                "rcl": {"gpu_counts": "all", "partition_gpus": "mig=mig cpu=none"},
                 "my cluster": {"ssh": "login.example.org", "gpu_counts": "all"},
             },
         }
@@ -50,6 +50,7 @@ class ProfileTests(unittest.TestCase):
 
         self.assertEqual(tomllib.loads(text), config)
         self.assertIn('\n[clusters.rcl]\ngpu_counts = "all"\n', text)
+        self.assertIn('partition_gpus = "mig=mig cpu=none"\n', text)
         self.assertIn('[clusters."my cluster"]', text)
         self.assertTrue(text.startswith("# Settings for sqtop"))
         self.assertEqual(profiles.dump_config({}).count("["), 0)
@@ -104,6 +105,7 @@ class ProfileTests(unittest.TestCase):
 [clusters.mycluster]
 gpu_counts = "one_or_node"
 resources = "by_gpu"
+partition_gpus = "mig=mig full=whole cpu=none"
 ssh = "login.example.org"
 """
         )
@@ -112,6 +114,10 @@ ssh = "login.example.org"
 
         self.assertEqual(mine.gpu_counts, "one_or_node")
         self.assertEqual(mine.resources, "by_gpu")
+        self.assertEqual(
+            mine.partition_gpus, {"mig": "mig", "full": "whole", "cpu": "none"}
+        )
+        self.assertEqual(profiles.load_profile("other", path=path).partition_gpus, {})
         self.assertEqual(mine.ssh, "login.example.org")
         self.assertEqual(profiles.load_profile("other", path=path).resources, "request")
 
@@ -192,6 +198,11 @@ ssh = "login.example.org"
             '[clusters.x]\nssh = ""\n',
             '[clusters.x]\ngpu_counts = "some"\n',
             '[clusters.x]\nresources = "none"\n',
+            '[clusters.x]\npartition_gpus = "mig"\n',
+            '[clusters.x]\npartition_gpus = "mig=some"\n',
+            '[clusters.x]\npartition_gpus = "=mig"\n',
+            "[clusters.x]\npartition_gpus = 3\n",
+            '[clusters.x]\npartition_gpus = ["mig=mig"]\n',
             'clusters = "x"\n',
             "[clusters.x\n",
         ):

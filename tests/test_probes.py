@@ -71,7 +71,7 @@ class RequestPlanTests(unittest.TestCase):
 
         self.assertEqual(
             [request.label for request in requests],
-            ["1x h100", "2x h100", "1x l40s", "2x l40s", "CPU only"],
+            ["h100:1", "h100:2", "l40s:1", "l40s:2", "CPU only"],
         )
         self.assertEqual(requests[1].directives(), ["--gpus-per-node=h100:2"])
         self.assertEqual(requests[-1].directives(), [])
@@ -80,6 +80,14 @@ class RequestPlanTests(unittest.TestCase):
         requests = probes.plan_requests({"gpu": 2}, {})
 
         self.assertEqual(requests[1].directives(), ["--gpus-per-node=2"])
+        self.assertEqual(requests[1].label, "gpu:2")
+
+    def test_labels_a_request_as_its_command_names_it(self):
+        gpu = "nvidia_b300_sxm6_ac_2g.67gb"
+        request = probes.Request(gpu, 3)
+
+        self.assertEqual(request.label, f"{gpu}:3")
+        self.assertEqual(request.directives(), [f"--gpus-per-node={request.label}"])
 
 
 class MaxGpuCountTests(unittest.TestCase):
@@ -368,7 +376,7 @@ class BuildGridTests(unittest.TestCase):
             {"name": "gpu", "max_time": 180, "usable": True},
             {"name": "private", "max_time": 4320, "usable": False},
         ]
-        snap = Mock(nodes=nodes, partitions=partitions, gpu_names={"l40s": "L40S"})
+        snap = Mock(nodes=nodes, partitions=partitions)
         snap.limits.return_value = [
             Limit("QOS per user", "GPUs", "tres:gres/gpu", 2),
             Limit("QOS per job", "wall time", "wall", 120),
@@ -382,7 +390,7 @@ class BuildGridTests(unittest.TestCase):
 
         self.assertEqual(
             [request.label for request in grid.requests],
-            ["1x L40S", "2x L40S", "CPU only"],
+            ["l40s:1", "l40s:2", "CPU only"],
         )
         self.assertEqual(grid.requests[0].directives(), ["--gpus-per-node=l40s:1"])
         self.assertEqual(grid.walltimes, [180])
@@ -394,13 +402,13 @@ class BuildGridTests(unittest.TestCase):
             snap, Scope("lab", "normal"), Settings(whole_node=True), GENERIC, info
         )
         self.assertEqual(
-            [request.label for request in whole.requests], ["4x L40S", "CPU only"]
+            [request.label for request in whole.requests], ["l40s:4", "CPU only"]
         )
 
     def test_asks_for_whole_gpu_nodes_where_gpus_go_by_node(self):
         nodes = [{"name": "a", "cfg_gpus": {"h100": 4}, "partitions": ["gpu"]}]
         partitions = [{"name": "gpu", "max_time": 180, "usable": True}]
-        snap = Mock(nodes=nodes, partitions=partitions, gpu_names={})
+        snap = Mock(nodes=nodes, partitions=partitions)
         snap.limits.return_value = []
         info = snapshot.ClusterInfo("tamia", "1", "me", "login", None)
         profile = profiles.Profile("tamia", gpu_counts="whole_node")
@@ -408,7 +416,7 @@ class BuildGridTests(unittest.TestCase):
         grid = probes.build_grid(snap, Scope(), Settings(), profile, info)
 
         self.assertEqual(
-            [request.label for request in grid.requests], ["4x h100", "CPU only"]
+            [request.label for request in grid.requests], ["h100:4", "CPU only"]
         )
         # Every CPU and all the memory with the GPUs; CPU-only keeps -c/--mem.
         self.assertEqual(
@@ -441,7 +449,7 @@ class BuildGridTests(unittest.TestCase):
         # Trillium GPU: one GPU or a whole node, and --mem is refused.
         nodes = [{"name": "a", "cfg_gpus": {"h100": 4}, "partitions": ["gpu"]}]
         partitions = [{"name": "gpu", "max_time": 180, "usable": True}]
-        snap = Mock(nodes=nodes, partitions=partitions, gpu_names={})
+        snap = Mock(nodes=nodes, partitions=partitions)
         snap.limits.return_value = []
         info = snapshot.ClusterInfo("grillium", "1", "me", "login", None)
         profile = profiles.Profile(
@@ -452,7 +460,7 @@ class BuildGridTests(unittest.TestCase):
 
         self.assertEqual(
             [request.label for request in grid.requests],
-            ["1x h100", "4x h100", "CPU only"],
+            ["h100:1", "h100:4", "CPU only"],
         )
         self.assertEqual(
             grid.probe_directives(0, 0),

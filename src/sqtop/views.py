@@ -69,9 +69,8 @@ def main_resource(summary):
     return cpus["allocated"], cpus["free"], cpus["total"]
 
 
-def free_resources(summary, names=None):
+def free_resources(summary):
     """Free/total GPUs per type (in total beyond two types), or CPUs."""
-    names = names or {}
     gpus = summary["gpus"]
     if len(gpus) > 2:
         free = sum(counts["free"] for counts in gpus.values())
@@ -79,8 +78,7 @@ def free_resources(summary, names=None):
         return f"{free}/{total} GPUs ({len(gpus)} types)"
     if gpus:
         return ", ".join(
-            f"{counts['free']}/{counts['total']} {names.get(gpu, gpu)}"
-            for gpu, counts in gpus.items()
+            f"{counts['free']}/{counts['total']} {gpu}" for gpu, counts in gpus.items()
         )
     return f"{summary['cpus']['free']}/{summary['cpus']['total']} CPUs"
 
@@ -105,9 +103,8 @@ def node_mem(summary):
     return _per_node((mem for _, mem, _ in summary["node_kinds"]), "G")
 
 
-def node_gpus(summary, names=None):
-    """GPUs per node: `8x h100`, `4x h100 / 8x h200`, or a range of totals."""
-    names = names or {}
+def node_gpus(summary):
+    """GPUs per node: `h100:8`, `h100:4 / h200:8`, or a range of totals."""
     configs = sorted({tuple(sorted(gpus)) for _, _, gpus in summary["node_kinds"]})
     if not configs or configs == [()]:
         return "-"
@@ -116,19 +113,19 @@ def node_gpus(summary, names=None):
         if not config:
             return "0"
         if len(config) > 2:
-            return f"{sum(count for _, count in config)}x ({len(config)} types)"
-        return " + ".join(f"{count}x {names.get(gpu, gpu)}" for gpu, count in config)
+            return f"{sum(count for _, count in config)} GPUs ({len(config)} types)"
+        return " + ".join(f"{gpu}:{count}" for gpu, count in config)
 
     if len(configs) <= 2:
         return " / ".join(describe(config) for config in configs)
     totals = sorted(sum(count for _, count in config) for config in configs)
-    return f"{totals[0]}-{totals[-1]}x ({len(configs)} kinds)"
+    return f"{totals[0]}-{totals[-1]} GPUs ({len(configs)} kinds)"
 
 
-def node_kinds(summary, names=None):
+def node_kinds(summary):
     """Each hardware kind in a partition with its node count, largest first."""
     return [
-        f"{count} node{'' if count == 1 else 's'}: {snapshot.hw_key_label(key, names)}"
+        f"{count} node{'' if count == 1 else 's'}: {snapshot.hw_key_label(key)}"
         for key, count in summary["node_kinds"].most_common()
     ]
 

@@ -1005,37 +1005,12 @@ class ParseAssociationsTests(unittest.TestCase):
         self.assertEqual(len(slurm.parse_associations(ASSOCIATIONS)), 3)
 
 
-class GpuNameTests(unittest.TestCase):
-    def test_shortens_model_and_keeps_mig_profiles(self):
-        for gpu, name in [
-            ("nvidia_h100_80gb_hbm3_1g.10gb", "h100 1g.10gb"),
-            ("nvidia_b200_2g.45gb", "b200 2g.45gb"),
-            ("nvidia_a100-sxm4-40gb", "a100"),
-            ("nvidia_b200", "b200"),
-            ("l40s", "l40s"),
-        ]:
-            with self.subTest(gpu=gpu):
-                self.assertEqual(slurm.short_gpu_name(gpu), name)
-
-    def test_keeps_full_names_that_would_collide(self):
-        names = slurm.gpu_display_names(
-            [
-                "nvidia_a100-sxm4-40gb",
-                "nvidia_a100-sxm4-80gb",
-                "h100",
-                "nvidia_h100_80gb_hbm3",
-            ]
-        )
-
-        self.assertEqual(
-            names,
-            {
-                "nvidia_a100-sxm4-40gb": "nvidia_a100-sxm4-40gb",
-                "nvidia_a100-sxm4-80gb": "nvidia_a100-sxm4-80gb",
-                "h100": "h100",
-                "nvidia_h100_80gb_hbm3": "nvidia_h100_80gb_hbm3",
-            },
-        )
+class MigTests(unittest.TestCase):
+    def test_tells_mig_slices_from_whole_gpus(self):
+        for gpu in ("nvidia_b200_2g.45gb", "nvidia_h100_80gb_hbm3_1g.10gb"):
+            self.assertTrue(slurm.is_mig(gpu), gpu)
+        for gpu in ("nvidia_b200", "nvidia_h100_80gb_hbm3", "l40s", "gpu"):
+            self.assertFalse(slurm.is_mig(gpu), gpu)
 
 
 if __name__ == "__main__":

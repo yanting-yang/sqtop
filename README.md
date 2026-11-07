@@ -110,11 +110,12 @@ The bottom bar also shows which version of sqtop is running.
   `░` free. `Free` is free/total per GPU type, `Idle` counts wholly idle nodes, `Pend`
   counts everyone's pending jobs, and `Max` is the time limit.
 - **Start estimates**, titled with the account/QOS probed. Rows are request sizes,
-  columns are walltimes, and each cell is how long until the scheduler expects the job to
-  start: `now`, a wait such as `0-10:54:00`, `no` when it cannot run (Details gives the
-  reason), or `-` above the account/QOS wall-time cap. The earliest start in each row is
-  underlined: in the screenshot a 1-day L40S job starts sooner than a 3-hour one,
-  because short jobs queue in the busier `b1` partition.
+  written as `--gpus-per-node` takes them (`h100:4`), columns are walltimes, and each
+  cell is how long until the scheduler expects the job to start: `now`, a wait such as
+  `0-10:54:00`, `no` when it cannot run (Details gives the reason), or `-` above the
+  account/QOS wall-time cap. The earliest start in each row is underlined. A longer job
+  can start sooner: in the screenshot a 3-day L40S job beats a 12-hour one, since
+  12-hour jobs queue in the much busier `b2` partition.
 - **Accounts & QOS.** Every account/QOS pair you can submit under. `*` marks what
   commands leave out because Slurm picks it anyway. `Jobs` is your running jobs over the
   tightest per-user cap, `GPUs` and `Wall` are the tightest GPU and wall-time caps from
@@ -140,23 +141,26 @@ changed without a restart. The file is plain TOML, so you can also edit it by ha
 
 ### Clusters
 
-Partitions, GPU types, time limits, accounts and limits all come from Slurm. A cluster
-profile records only an ssh host and the rules Slurm cannot report, keyed by the cluster
-name (`ClusterName` in `scontrol show config`):
+Partitions, GPU types, time limits, accounts and limits all come from Slurm, and GPU
+types are shown exactly as Slurm names them. A cluster profile records only an ssh host
+and the rules Slurm cannot report, keyed by the cluster name (`ClusterName` in
+`scontrol show config`):
 
 | Setting | Values | Effect |
 | --- | --- | --- |
 | `ssh` | a host or `~/.ssh/config` alias | A tab for the cluster from anywhere |
 | `gpu_counts` | `pow2` (default: 1, 2, 4, ...), `all`, `whole_node`, `one_or_node` | GPU counts to probe. `whole_node` probes only whole nodes and asks for all of their CPUs and memory (`--exclusive --mem=0`); `one_or_node` probes 1 GPU and the whole node |
 | `resources` | `request` (default), `by_gpu` | `by_gpu` leaves `-c`/`--mem` out of GPU requests, for sites that size them by GPU and refuse `--mem` |
+| `partition_gpus` | `partition=kind` pairs; kinds are `mig`, `whole`, `none` | The GPUs each partition shows, for sites whose submit filter routes jobs by kind of GPU while Slurm lists every GPU in every partition. A partition left out shows all of its nodes' GPUs |
 
-These Alliance clusters have been checked with sqtop:
+These clusters have been checked with sqtop:
 
 | Cluster | Profile |
 | --- | --- |
 | Fir, Killarney, Narval, Nibi, Vulcan | `ssh` only |
 | Tamia | `gpu_counts = "whole_node"`: GPUs are allocated by whole node |
 | Trillium GPU | `gpu_counts = "one_or_node"`, `resources = "by_gpu"`: one GPU or whole nodes, with CPUs and memory by GPU |
+| RCL | `gpu_counts = "all"`, `partition_gpus = "mig=mig full=whole cpu=none"`: MIG slices, whole GPUs and CPU jobs each go to their own partition of one node |
 
 ```toml
 [clusters.fir]
@@ -170,6 +174,10 @@ gpu_counts = "whole_node"
 ssh = "trillium-gpu.alliancecan.ca"
 gpu_counts = "one_or_node"
 resources = "by_gpu"
+
+[clusters.rcl]
+gpu_counts = "all"
+partition_gpus = "mig=mig full=whole cpu=none"
 ```
 
 The walltimes probed are not a setting: they are the distinct time limits of the
@@ -180,7 +188,7 @@ for a session.
 
 Tick "Whole node" in `Edit request` to probe whole nodes: every command asks for
 `--exclusive --mem=0` (every CPU and all the memory) instead of `-c`/`--mem`, and the
-GPU rows are each type's full node, such as `8x h100`. Where a profile sets
+GPU rows are each type's full node, such as `h100:8`. Where a profile sets
 `gpu_counts = "whole_node"`, the GPU rows always do this and the estimates note "GPUs by
 whole node"; with `resources = "by_gpu"` they note "GPU rows: CPUs and memory by GPU".
 

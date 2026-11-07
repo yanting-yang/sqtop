@@ -2,8 +2,8 @@
 
 Everything else (hardware, partitions, time tiers, accounts, QOS limits) is
 read from Slurm. A profile only records what Slurm cannot tell us: site
-rules about GPU request sizes and about sizing CPUs and memory, and an ssh
-host to reach the cluster from elsewhere.
+rules about GPU request sizes, about sizing CPUs and memory and about which
+GPUs a partition offers, and an ssh host to reach the cluster from elsewhere.
 
 Profiles live in the config file with the email settings (`[mail]` for
 Slurm's job emails, `[smtp]` for the dashboard's hourly email): your own
@@ -50,6 +50,7 @@ SMTP_PORT = 587
 
 GPU_COUNT_MODES = ("pow2", "all", "whole_node", "one_or_node")
 RESOURCE_MODES = ("request", "by_gpu")
+PARTITION_GPU_KINDS = ("mig", "whole", "none")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -60,6 +61,10 @@ class Profile:
     # Whether GPU requests ask for the request's CPUs and memory, or leave
     # them to a site that sizes them by GPU and refuses --mem (`by_gpu`).
     resources: str = "request"
+    # {partition: kind}: the one kind of its nodes' GPUs a partition offers,
+    # where a submit filter routes by kind but Slurm reports them all. A
+    # partition left out offers every GPU on its nodes.
+    partition_gpus: dict = dataclasses.field(default_factory=dict)
     # ssh destination of a login node, to show this cluster from elsewhere.
     ssh: str | None = None
 
@@ -232,6 +237,21 @@ def load_profiles(path=None):
     return clusters
 
 
+def parse_partition_gpus(name, text):
+    """`mig=mig full=whole cpu=none` as {partition: kind}."""
+    problem = (
+        f"cluster {name!r}: partition_gpus must be partition=kind pairs, "
+        f"with kinds {', '.join(PARTITION_GPU_KINDS)}"
+    )
+    kinds = {}
+    for pair in str(text).split():
+        partition, _, kind = pair.partition("=")
+        if not partition or kind not in PARTITION_GPU_KINDS:
+            raise ValueError(problem)
+        kinds[partition] = kind
+    return kinds
+
+
 def build_profile(name, settings):
     """Validate raw settings and return a `Profile`."""
     known = {field.name for field in dataclasses.fields(Profile)} - {"name"}
@@ -255,7 +275,13 @@ def build_profile(name, settings):
     if ssh is not None and (not isinstance(ssh, str) or not ssh.strip()):
         raise ValueError(f"cluster {name!r}: ssh must be a host name or alias")
 
-    return Profile(name=name, gpu_counts=gpu_counts, resources=resources, ssh=ssh)
+    return Profile(
+        name=name,
+        gpu_counts=gpu_counts,
+        resources=resources,
+        partition_gpus=parse_partition_gpus(name, settings.get("partition_gpus", "")),
+        ssh=ssh,
+    )
 
 
 def load_profile(cluster, path=None):

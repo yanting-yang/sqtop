@@ -158,8 +158,6 @@ class Snapshot:
     associations: list
     jobs: list | None
     notes: list
-    # Display names for this cluster's GPU types (`slurm.gpu_display_names`).
-    gpu_names: dict = dataclasses.field(default_factory=dict)
 
     def preferred_scope(self):
         """The pair Slurm uses by default, or the first one there is."""
@@ -510,11 +508,32 @@ def partition_access(partition, accounts, qos_names, groups):
     return True, ""
 
 
-def summarize_partitions(partitions, nodes, pending, scopes, groups):
+def partition_node(node, kind):
+    """`node` as a partition offering only one `kind` of its GPUs sees it.
+
+    Slurm reports every partition of a node with all of its GPUs, even where
+    a submit filter routes each kind to its own (`Profile.partition_gpus`).
+    """
+
+    def offered(gpu):
+        return kind != "none" and slurm.is_mig(gpu) == (kind == "mig")
+
+    return {
+        **node,
+        "cfg_gpus": {gpu: n for gpu, n in node["cfg_gpus"].items() if offered(gpu)},
+        "alloc_gpus": {gpu: n for gpu, n in node["alloc_gpus"].items() if offered(gpu)},
+    }
+
+
+def summarize_partitions(
+    partitions, nodes, pending, scopes, groups, partition_gpus=None
+):
+    partition_gpus = partition_gpus or {}
     members = defaultdict(list)
     for node in nodes:
         for name in node["partitions"]:
-            members[name].append(node)
+            kind = partition_gpus.get(name)
+            members[name].append(partition_node(node, kind) if kind else node)
     accounts = {scope.account for scope in scopes if scope.account}
     qos_names = {scope.qos for scope in scopes if scope.qos}
     summaries = []
@@ -546,22 +565,21 @@ def node_hw_key(node):
     )
 
 
-def hw_key_label(key, names=None):
+def hw_key_label(key):
     cpus, mem_gb, gpu_frozenset = key
-    names = names or {}
     parts = [f"{cpus} CPUs", f"{mem_gb} GB"]
-    parts += [f"{count}x {names.get(gpu, gpu)}" for gpu, count in sorted(gpu_frozenset)]
+    parts += [f"{gpu}:{count}" for gpu, count in sorted(gpu_frozenset)]
     return " / ".join(parts)
 
 
-def summarize_hardware(nodes, names=None):
+def summarize_hardware(nodes):
     """Group nodes by CPUs, whole GiB of memory and GPUs, with usage per group."""
     groups = defaultdict(list)
     for node in nodes:
         groups[node_hw_key(node)].append(node)
     return [
         {
-            "label": hw_key_label(key, names),
+            "label": hw_key_label(key),
             "names": [node["name"] for node in groups[key]],
             **resource_usage(groups[key]),
         }
@@ -592,9 +610,11 @@ class Collector:
     # Parent accounts deeper than this are not followed.
     MAX_ACCOUNT_DEPTH = 5
 
-    def __init__(self, info, host):
+    def __init__(self, info, host, partition_gpus=None):
         self.info = info
         self.host = host
+        # The profile's rule (`summarize_partitions`), which may change.
+        self.partition_gpus = partition_gpus
         self.scopes = None
         self.scope_notes = []
         self.parents = set()
@@ -688,9 +708,6 @@ class Collector:
             if scopes or assoc_output is not None:
                 self.scopes = scopes
         scopes = self.scopes or []
-        gpu_names = slurm.gpu_display_names(
-            sorted({gpu for node in nodes for gpu in node["cfg_gpus"]})
-        )
 
         return Snapshot(
             taken_at=datetime.datetime.now().replace(microsecond=0),
@@ -701,12 +718,12 @@ class Collector:
                 None if pending is None else slurm.parse_pending(pending),
                 scopes,
                 self.info.groups,
+                self.partition_gpus,
             ),
-            hardware=summarize_hardware(nodes, gpu_names),
+            hardware=summarize_hardware(nodes),
             scopes=scopes,
             qos_records=qos_records,
             associations=associations,
             jobs=jobs,
             notes=self.scope_notes + notes,
-            gpu_names=gpu_names,
         )

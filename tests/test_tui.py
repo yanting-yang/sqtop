@@ -20,12 +20,15 @@ from test_report import fake_probe, make_snapshot
 
 
 class FakeCollector:
-    def __init__(self, info, host):
+    def __init__(self, info, host, partition_gpus=None):
         self.host = host
+        self.partition_gpus = partition_gpus
+        self.collected = 0
         self.snap = make_snapshot()
         self.fail = None
 
     def collect(self):
+        self.collected += 1
         if self.host.lost:
             raise hosts.ConnectionLost(self.host.lost)
         if self.fail:
@@ -170,7 +173,7 @@ class DashboardTests(TuiTestCase):
             )
             self.assertEqual(
                 [str(cell) for cell in partitions.get_row_at(0)[2:5]],
-                ["60", "512G", "4x l40s"],
+                ["60", "512G", "l40s:4"],
             )
             self.assertEqual(self.table("hardware").row_count, 1)
             self.assertEqual(self.table("scopes").row_count, 2)
@@ -421,7 +424,7 @@ class DashboardTests(TuiTestCase):
             # Only each GPU type's full node count, then CPU only.
             self.assertEqual(
                 [request.label for request in self.view.grid.requests],
-                ["4x l40s", "CPU only"],
+                ["l40s:4", "CPU only"],
             )
             self.assertIn("whole node", self.table("estimates").border_subtitle)
 
@@ -1159,6 +1162,52 @@ class ConfigTests(TuiTestCase):
             self.assertEqual(self.view.profile.resources, "by_gpu")
             self.assertEqual(len(self.here.streamed), probed + 1)
             self.assertNotIn("-c32", self.last_probe())
+
+    async def test_collects_again_when_partitions_offer_other_gpus(self):
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.settle(pilot)
+            collector = self.view.collector
+            collected, probed = collector.collected, len(self.here.streamed)
+            await self.open_form(pilot)
+            row = await self.add_row(
+                pilot, name="here", partition_gpus="mig=mig full=whole"
+            )
+            self.assertEqual(
+                row.values(), ("here", {"partition_gpus": "mig=mig full=whole"})
+            )
+
+            messages = await self.save(pilot)
+
+            self.assertEqual(messages, [f"Saved {self.path}. Reloaded: here profile."])
+            self.assertEqual(
+                self.saved()["clusters"]["here"],
+                {"partition_gpus": "mig=mig full=whole"},
+            )
+            self.assertEqual(self.view.profile.partition_gpus["full"], "whole")
+            self.assertEqual(collector.partition_gpus, {"mig": "mig", "full": "whole"})
+            self.assertEqual(collector.collected, collected + 1)
+            # The estimates do not depend on it, so nothing is probed again...
+            self.assertEqual(len(self.here.streamed), probed)
+            # ...and a tab never opened is not contacted for it.
+            self.assertEqual(self.contacted, [None])
+
+            # The form opens on it again.
+            await self.open_form(pilot)
+            self.assertEqual(
+                self.rows()[-1].field("partition-gpus"), "mig=mig full=whole"
+            )
+
+    async def test_refuses_an_invalid_partition_gpus_rule(self):
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.settle(pilot)
+            await self.open_form(pilot)
+            self.fill_row(self.rows()[0], partition_gpus="mig=some")
+
+            self.assertEqual(await self.save(pilot), [])
+
+            self.assertIsInstance(self.app.screen, tui.ConfigScreen)
+            self.assertIn("partition_gpus must be", self.form_error())
+            self.assertEqual(self.path.read_text(), FIR)
 
     async def test_applies_a_changed_mail_table_to_every_tab(self):
         async with self.app.run_test(size=(150, 44)) as pilot:

@@ -379,6 +379,46 @@ class SummaryTests(unittest.TestCase):
         self.assertFalse(long["usable"])
         self.assertEqual(long["access_note"], "none of your accounts is allowed")
 
+    def test_shows_each_partition_only_the_gpus_it_offers(self):
+        # RCL: one node in every partition, and a submit filter that routes MIG
+        # slices to mig, whole GPUs to full and jobs without GPUs to cpu.
+        whole, slice_2g, slice_3g = (
+            "nvidia_b200",
+            "nvidia_b200_2g.45gb",
+            "nvidia_b200_3g.90gb",
+        )
+        nv2 = node(
+            "nv2",
+            partitions=("mig", "full", "cpu", "other"),
+            cfg_gpus={whole: 4, slice_2g: 8, slice_3g: 4},
+            alloc_gpus={whole: 1, slice_3g: 3},
+        )
+        names = ("mig", "full", "cpu", "other")
+
+        mig, full, cpu, other = snapshot.summarize_partitions(
+            [partition(name) for name in names],
+            [nv2],
+            {},
+            [],
+            None,
+            {"mig": "mig", "full": "whole", "cpu": "none"},
+        )
+
+        self.assertEqual(sorted(mig["gpus"]), [slice_2g, slice_3g])
+        self.assertEqual(mig["gpus"][slice_3g]["free"], 1)
+        self.assertEqual(sorted(full["gpus"]), [whole])
+        self.assertEqual(full["gpus"][whole]["free"], 3)
+        self.assertEqual(cpu["gpus"], {})
+        # Each partition's kinds of node hold only what it offers too.
+        self.assertEqual(list(full["node_kinds"]), [(60, 512, frozenset({(whole, 4)}))])
+        self.assertEqual(list(cpu["node_kinds"]), [(60, 512, frozenset())])
+        # A partition left out offers them all, and the node itself is untouched.
+        self.assertEqual(sorted(other["gpus"]), [whole, slice_2g, slice_3g])
+        self.assertEqual(len(nv2["cfg_gpus"]), 3)
+        self.assertEqual(len(nv2["alloc_gpus"]), 2)
+        # CPUs and memory are shared, so every partition sees the same.
+        self.assertEqual(cpu["cpus"], mig["cpus"])
+
     def test_marks_pending_unknown_when_squeue_failed(self):
         summary = snapshot.summarize_partitions([partition("gpu")], [], None, [], None)
 
@@ -398,8 +438,8 @@ class SummaryTests(unittest.TestCase):
             [group["label"] for group in groups],
             [
                 "60 CPUs / 512 GB",
-                "60 CPUs / 503 GB / 4x l40s",
-                "60 CPUs / 504 GB / 4x l40s",
+                "60 CPUs / 503 GB / l40s:4",
+                "60 CPUs / 504 GB / l40s:4",
             ],
         )
         self.assertEqual(groups[1]["names"], ["a", "b"])
@@ -444,14 +484,27 @@ class CollectorTests(unittest.TestCase):
         )
         self.info = snapshot.ClusterInfo("c", "25.05", "me", "login", None)
 
+    def test_applies_the_gpus_partitions_offer_but_not_to_the_hardware(self):
+        collector = snapshot.Collector(self.info, self.host, {"gpu": "none"})
+
+        snap = collector.collect()
+
+        self.assertEqual(snap.partitions[0]["gpus"], {})
+        self.assertEqual(snap.hardware[0]["label"], "60 CPUs / 512 GB / nvidia_l40s:4")
+        self.assertEqual(snap.nodes[0]["cfg_gpus"], {"nvidia_l40s": 4})
+        # The rule may change between refreshes.
+        collector.partition_gpus = None
+        self.assertEqual(
+            collector.collect().partitions[0]["gpus"]["nvidia_l40s"]["free"], 3
+        )
+
     def test_collects_every_panel_in_one_batch(self):
         snap = snapshot.Collector(self.info, self.host).collect()
 
         self.assertEqual(snap.scopes, [Scope("lab", "normal", True, True, True)])
         self.assertEqual(snap.partitions[0]["pending"], 2)
         self.assertEqual(snap.partitions[0]["gpus"]["nvidia_l40s"]["free"], 3)
-        self.assertEqual(snap.gpu_names, {"nvidia_l40s": "l40s"})
-        self.assertEqual(snap.hardware[0]["label"], "60 CPUs / 512 GB / 4x l40s")
+        self.assertEqual(snap.hardware[0]["label"], "60 CPUs / 512 GB / nvidia_l40s:4")
         self.assertEqual(snap.jobs, [])
         self.assertEqual(snap.notes, [])
         # One sacctmgr call, then one batch with everything else.

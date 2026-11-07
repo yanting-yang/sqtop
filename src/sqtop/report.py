@@ -41,9 +41,9 @@ def print_partitions(snap, out=None):
             "yes" if summary["usable"] else f"no ({summary['access_note']})",
             views.node_cpus(summary),
             views.node_mem(summary),
-            views.node_gpus(summary, snap.gpu_names),
+            views.node_gpus(summary),
             f"{views.load_percent(summary)}%",
-            views.free_resources(summary, snap.gpu_names),
+            views.free_resources(summary),
             views.idle_nodes(summary),
             "?" if summary["pending"] is None else summary["pending"],
             views.max_time(summary),
@@ -81,7 +81,7 @@ def print_hardware(snap, out=None):
             f"{group['cpus']['free']}/{group['cpus']['total']}",
             f"{views.gb(group['mem']['free'])}/{views.gb(group['mem']['total'])}",
             ", ".join(
-                f"{counts['free']}/{counts['total']} {snap.gpu_names.get(gpu, gpu)}"
+                f"{counts['free']}/{counts['total']} {gpu}"
                 for gpu, counts in group["gpus"].items()
             )
             or "-",
@@ -263,7 +263,9 @@ def print_cluster(cluster, settings, out=None):
     """Print one cluster's report; return its snapshot, or None if unreachable."""
     try:
         info = snapshot.ClusterInfo.detect(cluster.host)
-        snap = snapshot.Collector(info, cluster.host).collect()
+        snap = snapshot.Collector(
+            info, cluster.host, cluster.profile.partition_gpus
+        ).collect()
         print_report(info, snap, cluster.profile, settings, cluster.host, out=out)
         return snap
     except hosts.ConnectionLost as error:

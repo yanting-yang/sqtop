@@ -4,17 +4,58 @@ from sqtop import snapshot, views
 
 from test_snapshot import node, partition
 
-NAMES = {
-    "nvidia_h100_80gb_hbm3_1g.10gb": "h100 1g.10gb",
-    "nvidia_h100_80gb_hbm3_2g.20gb": "h100 2g.20gb",
-    "nvidia_h100_80gb_hbm3_3g.40gb": "h100 3g.40gb",
-}
-
 
 def summary(*nodes):
     return snapshot.summarize_partitions([partition("gpu")], list(nodes), {}, [], None)[
         0
     ]
+
+
+class PartitionGpuTests(unittest.TestCase):
+    """What the Partitions panel shows of RCL's one node, by partition."""
+
+    def summaries(self, partition_gpus=None):
+        names = ("mig", "full", "cpu")
+        nv2 = node(
+            "nv2",
+            partitions=names,
+            cfg_gpus={
+                "nvidia_b200": 4,
+                "nvidia_b200_2g.45gb": 8,
+                "nvidia_b200_3g.90gb": 4,
+            },
+            alloc_gpus={"nvidia_b200_3g.90gb": 3},
+        )
+        return snapshot.summarize_partitions(
+            [partition(name) for name in names], [nv2], {}, [], None, partition_gpus
+        )
+
+    def test_names_the_gpus_each_partition_offers(self):
+        mig, full, cpu = self.summaries({"mig": "mig", "full": "whole", "cpu": "none"})
+
+        self.assertEqual(
+            views.node_gpus(mig), "nvidia_b200_2g.45gb:8 + nvidia_b200_3g.90gb:4"
+        )
+        self.assertEqual(
+            views.free_resources(mig),
+            "8/8 nvidia_b200_2g.45gb, 1/4 nvidia_b200_3g.90gb",
+        )
+        self.assertEqual(views.load_percent(mig), 25)
+        self.assertEqual(views.node_gpus(full), "nvidia_b200:4")
+        self.assertEqual(views.free_resources(full), "4/4 nvidia_b200")
+        self.assertEqual(views.load_percent(full), 0)
+        # No GPUs here: its load and free are its CPUs'.
+        self.assertEqual(views.node_gpus(cpu), "-")
+        self.assertEqual(views.free_resources(cpu), "40/60 CPUs")
+        self.assertEqual(views.load_percent(cpu), 33)
+        self.assertEqual(views.node_kinds(cpu), ["1 node: 60 CPUs / 512 GB"])
+
+    def test_without_a_rule_every_partition_shows_the_whole_node(self):
+        mig, full, cpu = self.summaries()
+
+        for summary_ in (mig, full, cpu):
+            self.assertEqual(views.node_gpus(summary_), "16 GPUs (3 types)")
+            self.assertEqual(views.free_resources(summary_), "13/16 GPUs (3 types)")
 
 
 class PerNodeTests(unittest.TestCase):
@@ -23,7 +64,7 @@ class PerNodeTests(unittest.TestCase):
 
         self.assertEqual(views.node_cpus(p), "60")
         self.assertEqual(views.node_mem(p), "512G")
-        self.assertEqual(views.node_gpus(p), "4x l40s")
+        self.assertEqual(views.node_gpus(p), "l40s:4")
 
     def test_shows_two_kinds_side_by_side(self):
         # Like Killarney's H100 partitions (one larger node) and Tamia's
@@ -35,7 +76,7 @@ class PerNodeTests(unittest.TestCase):
 
         self.assertEqual(views.node_cpus(p), "48/64")
         self.assertEqual(views.node_mem(p), "512/1000G")
-        self.assertEqual(views.node_gpus(p), "4x h100 / 8x h200")
+        self.assertEqual(views.node_gpus(p), "h100:4 / h200:8")
 
     def test_shows_a_range_for_more_kinds(self):
         p = summary(
@@ -45,24 +86,27 @@ class PerNodeTests(unittest.TestCase):
         )
 
         self.assertEqual(views.node_cpus(p), "32-64")
-        self.assertEqual(views.node_gpus(p), "1-4x (3 kinds)")
+        self.assertEqual(views.node_gpus(p), "1-4 GPUs (3 kinds)")
 
-    def test_summarizes_mig_nodes_with_short_names(self):
+    def test_summarizes_mig_nodes_under_their_full_names(self):
         mig = {
             "nvidia_h100_80gb_hbm3_1g.10gb": 8,
             "nvidia_h100_80gb_hbm3_2g.20gb": 4,
         }
         p = summary(node("a", cfg_gpus=mig))
-        self.assertEqual(views.node_gpus(p, NAMES), "8x h100 1g.10gb + 4x h100 2g.20gb")
+        self.assertEqual(
+            views.node_gpus(p),
+            "nvidia_h100_80gb_hbm3_1g.10gb:8 + nvidia_h100_80gb_hbm3_2g.20gb:4",
+        )
 
         mig["nvidia_h100_80gb_hbm3_3g.40gb"] = 4
         p = summary(node("a", cfg_gpus=mig))
-        self.assertEqual(views.node_gpus(p, NAMES), "16x (3 types)")
+        self.assertEqual(views.node_gpus(p), "16 GPUs (3 types)")
 
     def test_marks_cpu_only_nodes(self):
         self.assertEqual(views.node_gpus(summary(node("a", cfg_gpus={}))), "-")
         p = summary(node("a", cfg_gpus={}), node("b"))
-        self.assertEqual(views.node_gpus(p), "0 / 4x l40s")
+        self.assertEqual(views.node_gpus(p), "0 / l40s:4")
 
     def test_shows_nothing_for_a_partition_without_nodes(self):
         p = summary()
@@ -77,8 +121,8 @@ class PerNodeTests(unittest.TestCase):
         self.assertEqual(
             views.node_kinds(p),
             [
-                "2 nodes: 60 CPUs / 512 GB / 4x l40s",
-                "1 node: 96 CPUs / 512 GB / 4x l40s",
+                "2 nodes: 60 CPUs / 512 GB / l40s:4",
+                "1 node: 96 CPUs / 512 GB / l40s:4",
             ],
         )
 

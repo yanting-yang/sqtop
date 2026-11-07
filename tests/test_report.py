@@ -126,7 +126,7 @@ class ReportTests(unittest.TestCase):
 
         self.assertRegex(
             text,
-            r"gpu\*\s+\| yes\s+\| 60\s+\| 512G\s+\| 4x l40s\s+\| \d+%\s+\| 3/8 l40s"
+            r"gpu\*\s+\| yes\s+\| 60\s+\| 512G\s+\| l40s:4\s+\| \d+%\s+\| 3/8 l40s"
             r"\s+\| 0/2\s+\| 12\s+\| 0-03:00:00",
         )
 
@@ -136,17 +136,17 @@ class ReportTests(unittest.TestCase):
         limited = limited[: limited.index("Start estimates for lab/normal")]
 
         # limited caps GPUs at 1 and wall time at 3 hours.
-        self.assertRegex(limited, r"1x l40s\s+\| now\s+\| -")
-        self.assertNotIn("2x l40s", limited)
+        self.assertRegex(limited, r"l40s:1\s+\| now\s+\| -")
+        self.assertNotIn("l40s:2", limited)
         self.assertIn("Request  | 0-03:00:00 | 1-00:00:00", limited)
         self.assertIn("'-' is over the 0-03:00:00 wall-time cap", limited)
         self.assertIn("--account=guests", limited)
 
         normal = text[text.index("Start estimates for lab/normal") :]
-        self.assertRegex(normal, r"4x l40s\s+\| no\s+\| no")
+        self.assertRegex(normal, r"l40s:4\s+\| no\s+\| no")
         self.assertRegex(normal, r"CPU only\s+\| now\s+\| 1-06:00:00")
         # Rejected at every walltime, so the request is named once.
-        self.assertIn("  4x l40s: too big", normal)
+        self.assertIn("  l40s:4: too big", normal)
         self.assertIn(
             "Probe, e.g.: sbatch --test-only --gpus-per-node=l40s:1 -c32 --mem=128G "
             '-t0-03:00:00 --output=/dev/null --wrap="sleep infinity"\n'
@@ -234,6 +234,20 @@ class ReportsTests(unittest.TestCase):
         ):
             self.assertIs(report.print_cluster(cluster, probes.Settings()), snap)
             self.assertIsNone(report.print_cluster(lost, probes.Settings()))
+
+    def test_applies_the_gpus_partitions_offer_from_the_profile(self):
+        profile = profiles.Profile("rcl", partition_gpus={"cpu": "none"})
+        cluster = snapshot.Cluster("rcl", profile, FakeHost())
+        info = snapshot.ClusterInfo("rcl", "25", "me", "login", None)
+
+        with (
+            patch.object(snapshot.ClusterInfo, "detect", return_value=info),
+            patch.object(snapshot, "Collector") as collector,
+            patch.object(report, "print_report"),
+        ):
+            report.print_cluster(cluster, probes.Settings())
+
+        collector.assert_called_once_with(info, cluster.host, {"cpu": "none"})
 
 
 if __name__ == "__main__":

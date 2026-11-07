@@ -183,26 +183,13 @@ def remove_untyped_gpu_rollup(gpu_counts):
     return typed if typed else gpu_counts
 
 
-def short_gpu_name(gpu):
-    """A readable GPU type: `nvidia_h100_80gb_hbm3_1g.10gb` -> `h100 1g.10gb`.
-
-    Drops the vendor prefix and memory/form-factor qualifiers, and keeps a MIG
-    profile apart from the model.
-    """
-    name = gpu.removeprefix("nvidia_")
-    mig = re.search(r"[_-](\d+g\.\d+gb)$", name)
-    if mig:
-        name = name[: mig.start()]
-    name = re.sub(r"[_-]\d+gb(?:[_-]hbm\w*)?$", "", name)
-    name = re.sub(r"[_-](?:sxm\d*|pcie)(?=[_-]|$)", "", name)
-    return f"{name} {mig.group(1)}" if mig else name
+# The MIG profile ending a GPU type that is a slice: `..._1g.10gb`.
+MIG_PROFILE = re.compile(r"[_-]\d+g\.\d+gb$")
 
 
-def gpu_display_names(gpus):
-    """Map GPU types to `short_gpu_name`, keeping any that would collide whole."""
-    short = {gpu: short_gpu_name(gpu) for gpu in gpus}
-    taken = [name for name in short.values()]
-    return {gpu: name if taken.count(name) == 1 else gpu for gpu, name in short.items()}
+def is_mig(gpu):
+    """Whether a GPU type is a MIG slice rather than a whole GPU."""
+    return MIG_PROFILE.search(gpu) is not None
 
 
 def normalize_gpu_rollups(node):

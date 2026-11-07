@@ -251,6 +251,11 @@ class ClusterRow(Horizontal):
                 compact=True,
                 classes=rule.replace("_", "-"),
             )
+        yield Input(
+            str(settings.get("partition_gpus", "")),
+            classes="partition-gpus",
+            placeholder="partition=mig|whole|none",
+        )
         yield Input(str(settings.get("ssh", "")), classes="ssh", placeholder="host")
         yield Button("Remove", classes="remove")
 
@@ -266,14 +271,17 @@ class ClusterRow(Horizontal):
         Rules left at their defaults are left out of the file.
         """
         name, ssh = self.field("name"), self.field("ssh")
+        partition_gpus = self.field("partition-gpus")
         rules = {
             rule: self.rule(rule)
             for rule, _ in self.RULES
             if self.rule(rule) != getattr(profiles.Profile, rule)
         }
-        if not (name or ssh or rules):
+        if not (name or ssh or rules or partition_gpus):
             return None
         settings = dict(rules)
+        if partition_gpus:
+            settings["partition_gpus"] = partition_gpus
         if ssh:
             settings["ssh"] = ssh
         return name, settings
@@ -337,7 +345,9 @@ class ConfigScreen(ModalScreen):
                 yield Label("Name", classes="name")
                 yield Label("GPU counts", classes="gpu-counts")
                 yield Label("CPU/memory", classes="resources")
+                yield Label("Partition GPUs", classes="partition-gpus")
                 yield Label("ssh host", classes="ssh")
+                yield Label("", classes="remove")
             with Vertical(id="clusters"):
                 for name, settings in (self.config.get("clusters") or {}).items():
                     yield ClusterRow(name, settings)
@@ -611,7 +621,9 @@ class ClusterView(Vertical):
         try:
             if self.collector is None:
                 info = snapshot.ClusterInfo.detect(self.host)
-                self.collector = snapshot.Collector(info, self.host)
+                self.collector = snapshot.Collector(
+                    info, self.host, self.profile.partition_gpus
+                )
                 self.app.call_from_thread(self.detected, info)
             snap = self.collector.collect()
         except hosts.ConnectionLost as error:
@@ -703,9 +715,9 @@ class ClusterView(Vertical):
                         usable,
                         views.node_cpus(summary),
                         views.node_mem(summary),
-                        views.node_gpus(summary, self.snap.gpu_names),
+                        views.node_gpus(summary),
                         load_bar(summary),
-                        views.free_resources(summary, self.snap.gpu_names),
+                        views.free_resources(summary),
                         views.idle_nodes(summary),
                         "?" if pending is None else str(pending),
                         views.max_time(summary),
@@ -717,9 +729,8 @@ class ClusterView(Vertical):
     def fill_hardware(self):
         rows = []
         for index, group in enumerate(self.snap.hardware):
-            names = self.snap.gpu_names
             gpus = ", ".join(
-                f"{counts['free']}/{counts['total']} {names.get(gpu, gpu)}"
+                f"{counts['free']}/{counts['total']} {gpu}"
                 for gpu, counts in group["gpus"].items()
             )
             mem = group["mem"]
@@ -1003,7 +1014,7 @@ class ClusterView(Vertical):
                 f"Nodes {summary['node_count']} "
                 f"({views.state_counts(summary['states'])}) · pending jobs {pending}"
             ),
-            Text(" · ".join(views.node_kinds(summary, self.snap.gpu_names))),
+            Text(" · ".join(views.node_kinds(summary))),
             Text(
                 f"CPUs {cpus['free']} free / {cpus['allocated']} allocated / "
                 f"{cpus.get('unavailable', 0)} unavailable of {cpus['total']} · "
@@ -1013,7 +1024,7 @@ class ClusterView(Vertical):
         for gpu, counts in summary["gpus"].items():
             lines.append(
                 Text(
-                    f"GPUs {self.snap.gpu_names.get(gpu, gpu)}: {counts['free']} free / {counts['allocated']} "
+                    f"GPUs {gpu}: {counts['free']} free / {counts['allocated']} "
                     f"allocated / {counts.get('unavailable', 0)} unavailable "
                     f"of {counts['total']}"
                 )
@@ -1229,16 +1240,26 @@ class ClusterView(Vertical):
         self.start_probes()
 
     def set_profile(self, profile):
-        """Use a reloaded profile; True if its rules changed (then re-probed)."""
-        changed = (profile.gpu_counts, profile.resources) != (
+        """Use a reloaded profile; True if its rules changed.
+
+        Probe rules re-probe; which GPUs partitions offer collects again.
+        """
+        probed = (profile.gpu_counts, profile.resources) != (
             self.profile.gpu_counts,
             self.profile.resources,
         )
+        summarized = profile.partition_gpus != self.profile.partition_gpus
         self.profile = self.cluster.profile = profile
-        if changed:
+        if self.collector is not None:
+            self.collector.partition_gpus = profile.partition_gpus
+        if probed or summarized:
             self.query_one("#identity", Static).update(self.identity())
+        if probed:
             self.start_probes()
-        return changed
+        # A tab never opened is not contacted; it collects with this profile.
+        if summarized and self.snap is not None:
+            self.refresh_snapshot()
+        return probed or summarized
 
     def selected_result(self):
         """The probe result under the estimates cursor, or None."""
@@ -1435,7 +1456,8 @@ class SqtopApp(App):
     #confirm-buttons Button { margin-left: 1; }
     ConfigScreen { align: center middle; }
     #config-dialog {
-        width: 110;
+        width: 124;
+        max-width: 100%;
         height: auto;
         max-height: 90%;
         border: round $border;
@@ -1457,6 +1479,7 @@ class SqtopApp(App):
     ClusterRow .resources, .cluster-heading .resources { width: 12; margin-right: 1; }
     ClusterRow Select > SelectCurrent { background: $boost; }
     ClusterRow Button { height: 1; min-width: 8; border: none; margin: 0; }
+    .cluster-heading .remove { width: 8; margin: 0; padding: 0; }
     #config-error { margin-top: 1; }
     #config-buttons { height: auto; align-horizontal: right; margin-top: 1; }
     #config-buttons Button { margin-left: 1; }
