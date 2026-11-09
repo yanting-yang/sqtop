@@ -158,6 +158,13 @@ class Snapshot:
     associations: list
     jobs: list | None
     notes: list
+    # Usage by resource (`summarize_resources`), shown for a single node.
+    resources: list = dataclasses.field(default_factory=list)
+
+    @property
+    def single_node(self):
+        """Whether the cluster is one node, whose partitions all share it."""
+        return len(self.nodes) == 1
 
     def preferred_scope(self):
         """The pair Slurm uses by default, or the first one there is."""
@@ -508,32 +515,11 @@ def partition_access(partition, accounts, qos_names, groups):
     return True, ""
 
 
-def partition_node(node, kind):
-    """`node` as a partition offering only one `kind` of its GPUs sees it.
-
-    Slurm reports every partition of a node with all of its GPUs, even where
-    a submit filter routes each kind to its own (`Profile.partition_gpus`).
-    """
-
-    def offered(gpu):
-        return kind != "none" and slurm.is_mig(gpu) == (kind == "mig")
-
-    return {
-        **node,
-        "cfg_gpus": {gpu: n for gpu, n in node["cfg_gpus"].items() if offered(gpu)},
-        "alloc_gpus": {gpu: n for gpu, n in node["alloc_gpus"].items() if offered(gpu)},
-    }
-
-
-def summarize_partitions(
-    partitions, nodes, pending, scopes, groups, partition_gpus=None
-):
-    partition_gpus = partition_gpus or {}
+def summarize_partitions(partitions, nodes, pending, scopes, groups):
     members = defaultdict(list)
     for node in nodes:
         for name in node["partitions"]:
-            kind = partition_gpus.get(name)
-            members[name].append(partition_node(node, kind) if kind else node)
+            members[name].append(node)
     accounts = {scope.account for scope in scopes if scope.account}
     qos_names = {scope.qos for scope in scopes if scope.qos}
     summaries = []
@@ -587,6 +573,37 @@ def summarize_hardware(nodes):
     ]
 
 
+def summarize_resources(nodes, pending):
+    """Usage of each resource across `nodes`: CPUs, memory, then each GPU type.
+
+    Shown in place of the partitions of a single-node cluster, which all
+    report that node's hardware whatever a submit filter routes to each.
+    `pending` (`slurm.parse_pending_gpus`, or None when unknown) counts the
+    pending jobs asking for each GPU type, and for none on the CPUs' row;
+    every job asks for memory, so its row has no count.
+    """
+    usage = resource_usage(nodes)
+
+    def row(name, kind, counts, gpu=None):
+        counted = pending is not None and kind != "mem"
+        return {
+            "name": name,
+            "kind": kind,
+            **{
+                key: counts[key]
+                for key in ("total", "allocated", "free", "unavailable")
+            },
+            # None: unknown, or for memory not counted.
+            "pending": pending.get(gpu, 0) if counted else None,
+        }
+
+    return [
+        row("CPUs", "cpu", usage["cpus"]),
+        row("Memory", "mem", usage["mem"]),
+        *(row(gpu, "gpu", counts, gpu) for gpu, counts in usage["gpus"].items()),
+    ]
+
+
 def gpu_capacities(nodes):
     """The most GPUs of each type that one node offers."""
     capacities = {}
@@ -610,11 +627,9 @@ class Collector:
     # Parent accounts deeper than this are not followed.
     MAX_ACCOUNT_DEPTH = 5
 
-    def __init__(self, info, host, partition_gpus=None):
+    def __init__(self, info, host):
         self.info = info
         self.host = host
-        # The profile's rule (`summarize_partitions`), which may change.
-        self.partition_gpus = partition_gpus
         self.scopes = None
         self.scope_notes = []
         self.parents = set()
@@ -718,7 +733,6 @@ class Collector:
                 None if pending is None else slurm.parse_pending(pending),
                 scopes,
                 self.info.groups,
-                self.partition_gpus,
             ),
             hardware=summarize_hardware(nodes),
             scopes=scopes,
@@ -726,4 +740,7 @@ class Collector:
             associations=associations,
             jobs=jobs,
             notes=self.scope_notes + notes,
+            resources=summarize_resources(
+                nodes, None if pending is None else slurm.parse_pending_gpus(pending)
+            ),
         )

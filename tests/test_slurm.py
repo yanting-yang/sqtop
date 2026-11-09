@@ -920,10 +920,34 @@ class JobTests(unittest.TestCase):
             ["sacct", "-n", "-X", "-P", "-j", "101,102"],
         )
 
-    def test_counts_pending_jobs_toward_every_partition_they_name(self):
+    def test_asks_what_every_pending_job_waits_in_and_asks_for(self):
         self.assertEqual(
-            slurm.parse_pending("gpu\ngpu,cpu\ncpu\ngpu\n"), {"gpu": 3, "cpu": 2}
+            slurm.PENDING_COMMAND,
+            ["squeue", "-h", "-t", "PD", "-O", "Partition:|,tres-alloc:|"],
         )
+
+    def test_counts_pending_jobs_toward_every_partition_they_name(self):
+        self.assertEqual(slurm.parse_pending(PENDING), {"full": 2, "mig": 3, "cpu": 1})
+        self.assertEqual(slurm.parse_pending(""), {})
+
+    def test_counts_pending_jobs_by_the_gpu_type_they_ask_for(self):
+        self.assertEqual(
+            slurm.parse_pending_gpus(PENDING),
+            # No GPU counts under None, an untyped one under "gpu".
+            {"nvidia_b200": 1, "nvidia_b200_2g.45gb": 2, None: 1, "gpu": 1},
+        )
+        self.assertEqual(slurm.parse_pending_gpus(""), {})
+
+
+# `squeue -h -t PD -O "Partition:|,tres-alloc:|"` on RCL, where every partition
+# is on one node; the third job named two partitions, the last an untyped GPU.
+PENDING = (
+    "full|cpu=8,mem=96G,node=1,billing=112,gres/gpu=1,gres/gpu:nvidia_b200=1|\n"
+    "mig|cpu=8,mem=48G,node=1,billing=32,gres/gpu=1,gres/gpu:nvidia_b200_2g.45gb=1|\n"
+    "mig,full|cpu=8,mem=48G,node=1,gres/gpu=1,gres/gpu:nvidia_b200_2g.45gb=1|\n"
+    "cpu|cpu=4,mem=8G,node=1,billing=1|\n"
+    "mig|cpu=1,mem=1G,node=1,gres/gpu=2|\n"
+)
 
 
 ASSOCIATIONS = """Association Records
@@ -1003,14 +1027,6 @@ class ParseAssociationsTests(unittest.TestCase):
 
     def test_stops_at_the_qos_section(self):
         self.assertEqual(len(slurm.parse_associations(ASSOCIATIONS)), 3)
-
-
-class MigTests(unittest.TestCase):
-    def test_tells_mig_slices_from_whole_gpus(self):
-        for gpu in ("nvidia_b200_2g.45gb", "nvidia_h100_80gb_hbm3_1g.10gb"):
-            self.assertTrue(slurm.is_mig(gpu), gpu)
-        for gpu in ("nvidia_b200", "nvidia_h100_80gb_hbm3", "l40s", "gpu"):
-            self.assertFalse(slurm.is_mig(gpu), gpu)
 
 
 if __name__ == "__main__":

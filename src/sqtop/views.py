@@ -142,9 +142,68 @@ def max_time(summary):
     )
 
 
+def percent(allocated, total):
+    return round(100 * allocated / total) if total else 0
+
+
 def load_percent(summary):
     allocated, _, total = main_resource(summary)
-    return round(100 * allocated / total) if total else 0
+    return percent(allocated, total)
+
+
+def resource_amount(row, key):
+    """An amount (`free`, `total`...) of one resource; memory in whole GiB."""
+    return gb(row[key]) if row["kind"] == "mem" else str(row[key])
+
+
+def resource_free(row):
+    """Free/total of one resource (`snapshot.summarize_resources`): `1779/2011G`."""
+    unit = "G" if row["kind"] == "mem" else ""
+    return f"{resource_amount(row, 'free')}/{resource_amount(row, 'total')}{unit}"
+
+
+def resource_usage(row):
+    """One resource's amounts in words, as partition details write them."""
+    free, allocated, unavailable, total = (
+        resource_amount(row, key)
+        for key in ("free", "allocated", "unavailable", "total")
+    )
+    unit = " GB" if row["kind"] == "mem" else ""
+    return (
+        f"{free} free / {allocated} allocated / {unavailable} unavailable "
+        f"of {total}{unit}"
+    )
+
+
+def resource_pending(row):
+    """Pending jobs asking for the resource: `-` for memory, which all do."""
+    if row["kind"] == "mem":
+        return "-"
+    return UNKNOWN if row["pending"] is None else str(row["pending"])
+
+
+def longest_time_limit(partitions):
+    """The longest time limit among the partitions the caller can use."""
+    usable = [summary for summary in partitions if summary["usable"]] or partitions
+    if not usable:
+        return UNKNOWN
+    limits = [summary["max_time"] for summary in usable]
+    return NO_LIMIT if None in limits else slurm.format_duration(max(limits))
+
+
+def node_state(node):
+    """A node's name with its state: `nv2 (mixed)`."""
+    return f"{node['name']} ({snapshot.node_category(node)})"
+
+
+def partition_names(partitions):
+    """Partitions by name, `*` on the default, saying why one cannot be used."""
+    return ", ".join(
+        summary["name"]
+        + ("*" if summary["default"] else "")
+        + ("" if summary["usable"] else f" (not usable: {summary['access_note']})")
+        for summary in partitions
+    )
 
 
 def state_counts(states):

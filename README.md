@@ -78,16 +78,18 @@ you are on, and the remote ones only where Slurm is not available.
 ## Using the dashboard
 
 Each tab probes a request of 32 CPUs and 128 GB with `sbatch` at every partition time
-limit; change it with `Edit request`. The visible tab refreshes every minute and
-re-probes every five. There are no keyboard shortcuts: everything is a click, and each
-dialog closes with its own buttons.
+limit; change it with `Edit request`. Where the account/QOS being probed allows fewer
+CPUs or less memory, the request is brought down to that cap, and the estimates note
+`capped by its limits`. The visible tab refreshes every minute and re-probes every
+five. There are no keyboard shortcuts: everything is a click, and each dialog closes
+with its own buttons.
 
 | Click | Action |
 | --- | --- |
 | a cluster tab | Show that cluster |
 | a row or cell | Select it; the Details panel follows the selection |
 | a highlighted Accounts & QOS row | Probe with that account/QOS |
-| the Partitions title | Switch between Partitions and Nodes by hardware |
+| the Partitions title | Switch between Partitions and Nodes by hardware (a single-node cluster has one Hardware table instead) |
 | the account/QOS above the estimates | Probe with the next account/QOS |
 | the command under the estimates | Switch between `sbatch` and `srun` probes |
 | `Submit` in Details | Submit the selected `sbatch` request, after you confirm |
@@ -109,6 +111,13 @@ The bottom bar also shows which version of sqtop is running.
   CPU-only partitions) in use: `█` allocated, `▒` unavailable (down, drained, reserved),
   `░` free. `Free` is free/total per GPU type, `Idle` counts wholly idle nodes, `Pend`
   counts everyone's pending jobs, and `Max` is the time limit.
+- **Hardware**, in place of Partitions on a cluster with a single node. Its partitions
+  all share that node, so Slurm reports the same hardware for each; the table has one
+  row per resource instead: CPUs, memory, then each GPU type. `Load` and `Free` are as
+  above. `Pend` counts everyone's pending jobs asking for that GPU type, and on the
+  CPUs row those asking for no GPU; every job asks for memory, so its row shows `-`.
+  `Max` is the longest time limit of the partitions you can use. Details list the
+  partitions with their time limits, pending jobs and allowed QOS.
 - **Start estimates**, titled with the account/QOS probed. Rows are request sizes,
   written as `--gpus-per-node` takes them (`h100:4`), columns are walltimes, and each
   cell is how long until the scheduler expects the job to start: `now`, a wait such as
@@ -123,7 +132,8 @@ The bottom bar also shows which version of sqtop is running.
 - **My jobs.** Your queued and running jobs. `Start` is when a job started, or when the
   scheduler expects a pending one to; `Nodes` is where it runs, or the nodes planned for
   a pending job (dimmed, as they can still change); `Reason` is why it waits.
-- **Details** follows the selection. For an estimate it shows the partition the job
+- **Details** follows the selection, and scrolls when there is more than fits (a QOS
+  with many limits). For an estimate it shows the partition the job
   would land in, the probe with the scheduler's reply, and the command to submit the
   same request, each with `Copy`. For a job it shows the command that attaches a shell
   to it (`srun --jobid=<id> --overlap --pty <shell>`) and the one that releases it.
@@ -151,7 +161,6 @@ and the rules Slurm cannot report, keyed by the cluster name (`ClusterName` in
 | `ssh` | a host or `~/.ssh/config` alias | A tab for the cluster from anywhere |
 | `gpu_counts` | `pow2` (default: 1, 2, 4, ...), `all`, `whole_node`, `one_or_node` | GPU counts to probe. `whole_node` probes only whole nodes and asks for all of their CPUs and memory (`--exclusive --mem=0`); `one_or_node` probes 1 GPU and the whole node |
 | `resources` | `request` (default), `by_gpu` | `by_gpu` leaves `-c`/`--mem` out of GPU requests, for sites that size them by GPU and refuse `--mem` |
-| `partition_gpus` | `partition=kind` pairs; kinds are `mig`, `whole`, `none` | The GPUs each partition shows, for sites whose submit filter routes jobs by kind of GPU while Slurm lists every GPU in every partition. A partition left out shows all of its nodes' GPUs |
 
 These clusters have been checked with sqtop:
 
@@ -160,7 +169,7 @@ These clusters have been checked with sqtop:
 | Fir, Killarney, Narval, Nibi, Vulcan | `ssh` only |
 | Tamia | `gpu_counts = "whole_node"`: GPUs are allocated by whole node |
 | Trillium GPU | `gpu_counts = "one_or_node"`, `resources = "by_gpu"`: one GPU or whole nodes, with CPUs and memory by GPU |
-| RCL | `gpu_counts = "all"`, `partition_gpus = "mig=mig full=whole cpu=none"`: MIG slices, whole GPUs and CPU jobs each go to their own partition of one node |
+| RCL | `gpu_counts = "all"`; it is one node, so it shows the Hardware table |
 
 ```toml
 [clusters.fir]
@@ -174,10 +183,6 @@ gpu_counts = "whole_node"
 ssh = "trillium-gpu.alliancecan.ca"
 gpu_counts = "one_or_node"
 resources = "by_gpu"
-
-[clusters.rcl]
-gpu_counts = "all"
-partition_gpus = "mig=mig full=whole cpu=none"
 ```
 
 The walltimes probed are not a setting: they are the distinct time limits of the

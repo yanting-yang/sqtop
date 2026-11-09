@@ -11,51 +11,64 @@ def summary(*nodes):
     ]
 
 
-class PartitionGpuTests(unittest.TestCase):
-    """What the Partitions panel shows of RCL's one node, by partition."""
+class ResourceTests(unittest.TestCase):
+    """The rows of a single node's hardware table."""
 
-    def summaries(self, partition_gpus=None):
-        names = ("mig", "full", "cpu")
-        nv2 = node(
-            "nv2",
-            partitions=names,
-            cfg_gpus={
-                "nvidia_b200": 4,
-                "nvidia_b200_2g.45gb": 8,
-                "nvidia_b200_3g.90gb": 4,
+    def rows(self, pending):
+        nv2 = node("nv2", cfg_gpus={"nvidia_b200": 4}, alloc_gpus={"nvidia_b200": 1})
+        return snapshot.summarize_resources([nv2], pending)
+
+    def test_shows_free_and_pending_per_resource(self):
+        cpus, mem, gpu = self.rows({None: 2})
+
+        self.assertEqual(views.resource_free(cpus), "40/60")
+        self.assertEqual(views.resource_free(mem), "384/512G")
+        self.assertEqual(views.resource_free(gpu), "3/4")
+        # Jobs asking for no GPU, no count for memory, jobs asking for the type.
+        self.assertEqual(
+            [views.resource_pending(row) for row in (cpus, mem, gpu)], ["2", "-", "0"]
+        )
+        self.assertEqual(
+            views.resource_usage(mem),
+            "384 free / 128 allocated / 0 unavailable of 512 GB",
+        )
+        self.assertEqual(
+            views.resource_usage(gpu), "3 free / 1 allocated / 0 unavailable of 4"
+        )
+        self.assertEqual(
+            [views.resource_pending(row) for row in self.rows(None)], ["?", "-", "?"]
+        )
+
+    def test_takes_the_longest_time_limit_of_usable_partitions(self):
+        def limit(*partitions):
+            return views.longest_time_limit(
+                [{"max_time": time, "usable": usable} for time, usable in partitions]
+            )
+
+        self.assertEqual(limit((180, True), (1440, True), (10080, False)), "1-00:00:00")
+        self.assertEqual(limit((180, True), (None, True)), "∞")
+        # With none usable, the partitions there are.
+        self.assertEqual(limit((180, False)), "0-03:00:00")
+        self.assertEqual(limit(), "?")
+
+    def test_names_the_node_and_its_partitions(self):
+        self.assertEqual(views.node_state(node("nv2")), "nv2 (mixed)")
+        self.assertEqual(
+            views.node_state(node("nv2", state="IDLE+DRAIN")), "nv2 (unavailable)"
+        )
+        partitions = [
+            {"name": "mig", "default": True, "usable": True, "access_note": ""},
+            {
+                "name": "full",
+                "default": False,
+                "usable": False,
+                "access_note": "none of your QOS is allowed",
             },
-            alloc_gpus={"nvidia_b200_3g.90gb": 3},
-        )
-        return snapshot.summarize_partitions(
-            [partition(name) for name in names], [nv2], {}, [], None, partition_gpus
-        )
-
-    def test_names_the_gpus_each_partition_offers(self):
-        mig, full, cpu = self.summaries({"mig": "mig", "full": "whole", "cpu": "none"})
-
+        ]
         self.assertEqual(
-            views.node_gpus(mig), "nvidia_b200_2g.45gb:8 + nvidia_b200_3g.90gb:4"
+            views.partition_names(partitions),
+            "mig*, full (not usable: none of your QOS is allowed)",
         )
-        self.assertEqual(
-            views.free_resources(mig),
-            "8/8 nvidia_b200_2g.45gb, 1/4 nvidia_b200_3g.90gb",
-        )
-        self.assertEqual(views.load_percent(mig), 25)
-        self.assertEqual(views.node_gpus(full), "nvidia_b200:4")
-        self.assertEqual(views.free_resources(full), "4/4 nvidia_b200")
-        self.assertEqual(views.load_percent(full), 0)
-        # No GPUs here: its load and free are its CPUs'.
-        self.assertEqual(views.node_gpus(cpu), "-")
-        self.assertEqual(views.free_resources(cpu), "40/60 CPUs")
-        self.assertEqual(views.load_percent(cpu), 33)
-        self.assertEqual(views.node_kinds(cpu), ["1 node: 60 CPUs / 512 GB"])
-
-    def test_without_a_rule_every_partition_shows_the_whole_node(self):
-        mig, full, cpu = self.summaries()
-
-        for summary_ in (mig, full, cpu):
-            self.assertEqual(views.node_gpus(summary_), "16 GPUs (3 types)")
-            self.assertEqual(views.free_resources(summary_), "13/16 GPUs (3 types)")
 
 
 class PerNodeTests(unittest.TestCase):

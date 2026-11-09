@@ -65,15 +65,14 @@ CELL_STYLES = {
 JOB_STATE_STYLES = {"RUNNING": "green", "PENDING": "yellow"}
 
 
-def load_bar(summary, width=8):
+def load_bar(allocated, free, total, width=8):
     """`███▒▒░░` bar of allocated, unavailable and free capacity, with a %."""
-    allocated, free, total = views.main_resource(summary)
     if not total:
         return Text("-", style="dim")
     unavailable = total - allocated - free
     cells = [round(width * value / total) for value in (allocated, unavailable)]
     cells.append(max(0, width - sum(cells)))
-    percent = views.load_percent(summary)
+    percent = views.percent(allocated, total)
     style = "red" if percent >= 90 else "yellow" if percent >= 70 else "green"
     bar = Text()
     bar.append("█" * cells[0], style=style)
@@ -251,11 +250,6 @@ class ClusterRow(Horizontal):
                 compact=True,
                 classes=rule.replace("_", "-"),
             )
-        yield Input(
-            str(settings.get("partition_gpus", "")),
-            classes="partition-gpus",
-            placeholder="partition=mig|whole|none",
-        )
         yield Input(str(settings.get("ssh", "")), classes="ssh", placeholder="host")
         yield Button("Remove", classes="remove")
 
@@ -271,17 +265,14 @@ class ClusterRow(Horizontal):
         Rules left at their defaults are left out of the file.
         """
         name, ssh = self.field("name"), self.field("ssh")
-        partition_gpus = self.field("partition-gpus")
         rules = {
             rule: self.rule(rule)
             for rule, _ in self.RULES
             if self.rule(rule) != getattr(profiles.Profile, rule)
         }
-        if not (name or ssh or rules or partition_gpus):
+        if not (name or ssh or rules):
             return None
         settings = dict(rules)
-        if partition_gpus:
-            settings["partition_gpus"] = partition_gpus
         if ssh:
             settings["ssh"] = ssh
         return name, settings
@@ -345,9 +336,7 @@ class ConfigScreen(ModalScreen):
                 yield Label("Name", classes="name")
                 yield Label("GPU counts", classes="gpu-counts")
                 yield Label("CPU/memory", classes="resources")
-                yield Label("Partition GPUs", classes="partition-gpus")
                 yield Label("ssh host", classes="ssh")
-                yield Label("", classes="remove")
             with Vertical(id="clusters"):
                 for name, settings in (self.config.get("clusters") or {}).items():
                     yield ClusterRow(name, settings)
@@ -485,6 +474,9 @@ class ClusterView(Vertical):
         self.probed_at = None
         self.error = None
         self.detail_from = "partitions"
+        # The selection the details show (table, row, column), to tell a new
+        # one, which starts at the top, from a refresh of the same one.
+        self.detail_shown = None
         # True from starting a collection until its outcome is shown. Kept
         # here rather than read from the worker, which is still winding down
         # when its outcome arrives, so a refresh asked for then is not dropped.
@@ -504,11 +496,16 @@ class ClusterView(Vertical):
                 toggle = Style(underline=True, meta={"@click": "app.toggle_nodes"})
                 yield self.table("partitions", Text("Partitions", toggle), "row")
                 yield self.table("hardware", Text("Nodes by hardware", toggle), "row")
+                # In place of both for a single node (`show_top`).
+                yield self.table("resources", "Hardware", "row")
             # Titled with the probed account/QOS once there is one.
             yield self.table("estimates", None, "cell")
             yield self.table("scopes", "Accounts & QOS", "row")
             yield self.table("jobs", "My jobs", "row")
-        yield Static(id="detail")
+        # The details scroll: a QOS can have more limits than the panel has
+        # lines. It takes no focus, which stays on the table it follows.
+        with VerticalScroll(id="detail", can_focus=False):
+            yield Static(id="detail-text")
 
     @staticmethod
     def table(table_id, title, cursor):
@@ -534,9 +531,11 @@ class ClusterView(Vertical):
     def on_mount(self):
         self.tables = {table.id: table for table in self.query(DataTable)}
         self.status = self.query_one("#status", Static)
-        self.detail = self.query_one("#detail", Static)
+        self.detail = self.query_one("#detail-text", Static)
+        self.detail_box = self.query_one("#detail", VerticalScroll)
         self.tables["hardware"].display = False
-        self.detail.border_title = "Details"
+        self.tables["resources"].display = False
+        self.detail_box.border_title = "Details"
         self.tables["partitions"].add_columns(
             "Partition",
             "Use",
@@ -552,6 +551,7 @@ class ClusterView(Vertical):
         self.tables["hardware"].add_columns(
             "Hardware", "Nodes", "States", "CPUs free", "Mem free (GB)", "GPUs free"
         )
+        self.tables["resources"].add_columns("Resource", "Load", "Free", "Pend", "Max")
         self.tables["scopes"].add_columns(
             "Account", "QOS", "Jobs", "GPUs", "Wall", "FS"
         )
@@ -621,9 +621,7 @@ class ClusterView(Vertical):
         try:
             if self.collector is None:
                 info = snapshot.ClusterInfo.detect(self.host)
-                self.collector = snapshot.Collector(
-                    info, self.host, self.profile.partition_gpus
-                )
+                self.collector = snapshot.Collector(info, self.host)
                 self.app.call_from_thread(self.detected, info)
             snap = self.collector.collect()
         except hosts.ConnectionLost as error:
@@ -658,6 +656,8 @@ class ClusterView(Vertical):
         self.error = None
         self.fill_partitions()
         self.fill_hardware()
+        self.fill_resources()
+        self.show_top()
         self.fill_jobs()
         if self.scope not in snap.scopes:
             self.scope = snap.preferred_scope()
@@ -716,7 +716,7 @@ class ClusterView(Vertical):
                         views.node_cpus(summary),
                         views.node_mem(summary),
                         views.node_gpus(summary),
-                        load_bar(summary),
+                        load_bar(*views.main_resource(summary)),
                         views.free_resources(summary),
                         views.idle_nodes(summary),
                         "?" if pending is None else str(pending),
@@ -748,6 +748,47 @@ class ClusterView(Vertical):
                 )
             )
         self.refill(self.tables["hardware"], rows)
+
+    def fill_resources(self):
+        """A single node's hardware by resource: CPUs, memory, each GPU type."""
+        table = self.tables["resources"]
+        if not self.snap.single_node:
+            table.clear()
+            return
+        max_time = views.longest_time_limit(self.snap.partitions)
+        rows = [
+            (
+                str(index),
+                (
+                    row["name"],
+                    load_bar(row["allocated"], row["free"], row["total"]),
+                    views.resource_free(row),
+                    views.resource_pending(row),
+                    max_time,
+                ),
+            )
+            for index, row in enumerate(self.snap.resources)
+        ]
+        self.refill(table, rows)
+        table.border_title = f"Hardware · {views.node_state(self.snap.nodes[0])}"
+
+    def show_top(self):
+        """The top panel: a single node's hardware, else Partitions or Nodes by
+        hardware. The partitions of one node all share its hardware, so they
+        would only repeat it."""
+        single = self.snap.single_node
+        resources = self.tables["resources"]
+        if resources.display == single:
+            return
+        top = ("partitions", "hardware", "resources")
+        focused = any(self.tables[name].has_focus for name in top)
+        resources.display = single
+        self.tables["partitions"].display = not single
+        self.tables["hardware"].display = False
+        if self.detail_from in top:
+            self.detail_from = "resources" if single else "partitions"
+        if focused:  # a hidden table cannot keep the focus
+            self.focus_main()
 
     def fill_scopes(self):
         rows = []
@@ -862,6 +903,8 @@ class ClusterView(Vertical):
             notes.append("GPUs by whole node")
         if grid.sized_by_gpu:
             notes.append("GPU rows: CPUs and memory by GPU")
+        if grid.capped:
+            notes.append("capped by its limits")
         # Clicking the command switches sbatch/srun.
         toggle = Style(underline=True, meta={"@click": "app.toggle_command"})
         subtitle = Text()
@@ -956,10 +999,16 @@ class ClusterView(Vertical):
             detail.update(self.notes_text())
             return
         row = table.cursor_row
+        shown = (source, row, table.cursor_column)
+        if shown != self.detail_shown:
+            self.detail_shown = shown
+            self.detail_box.scroll_home(animate=False, immediate=True)
         if source == "partitions":
             detail.update(self.partition_detail(self.snap.partitions[row]))
         elif source == "hardware":
             detail.update(self.hardware_detail(self.snap.hardware[row]))
+        elif source == "resources":
+            detail.update(self.resource_detail(self.snap.resources[row]))
         elif source == "scopes":
             detail.update(self.scope_detail(self.snap.scopes[row]))
         elif source == "estimates" and self.grid is not None:
@@ -1048,6 +1097,33 @@ class ClusterView(Vertical):
             Text(views.state_counts(group["states"])),
             Text(names, style="dim"),
         )
+
+    def resource_detail(self, row):
+        """One resource of a single node, then the partitions that share it."""
+        header = Text(row["name"], style="bold")
+        header.append(f"  on {views.node_state(self.snap.nodes[0])}", style="default")
+        usage = Text(views.resource_usage(row))
+        if row["kind"] != "mem":
+            asking = "no GPU" if row["kind"] == "cpu" else "it"
+            usage.append(f" · pending jobs asking for {asking}: ")
+            usage.append(views.resource_pending(row))
+        lines = [header, usage, Text("Partitions, all on this node:", style="dim")]
+        for summary in self.snap.partitions:
+            line = Text("  ")
+            line.append(summary["name"] + ("*" if summary["default"] else ""), "bold")
+            if summary["state"] != "UP":
+                line.append(f"  {summary['state']}")
+            if summary["usable"]:
+                line.append("  usable", style="green")
+            else:
+                line.append(f"  not usable: {summary['access_note']}", style="red")
+            pending = "?" if summary["pending"] is None else summary["pending"]
+            line.append(f" · max time {views.max_time(summary)}")
+            line.append(f" · pending jobs {pending}")
+            if summary["allow_qos"] is not None:
+                line.append(f" · QOS {', '.join(sorted(summary['allow_qos']))}", "dim")
+            lines.append(line)
+        return Group(*lines)
 
     def scope_detail(self, scope):
         table = Table(box=None, pad_edge=False, expand=False, header_style="bold")
@@ -1240,26 +1316,16 @@ class ClusterView(Vertical):
         self.start_probes()
 
     def set_profile(self, profile):
-        """Use a reloaded profile; True if its rules changed.
-
-        Probe rules re-probe; which GPUs partitions offer collects again.
-        """
-        probed = (profile.gpu_counts, profile.resources) != (
+        """Use a reloaded profile; True if its rules changed (then re-probed)."""
+        changed = (profile.gpu_counts, profile.resources) != (
             self.profile.gpu_counts,
             self.profile.resources,
         )
-        summarized = profile.partition_gpus != self.profile.partition_gpus
         self.profile = self.cluster.profile = profile
-        if self.collector is not None:
-            self.collector.partition_gpus = profile.partition_gpus
-        if probed or summarized:
+        if changed:
             self.query_one("#identity", Static).update(self.identity())
-        if probed:
             self.start_probes()
-        # A tab never opened is not contacted; it collects with this profile.
-        if summarized and self.snap is not None:
-            self.refresh_snapshot()
-        return probed or summarized
+        return changed
 
     def selected_result(self):
         """The probe result under the estimates cursor, or None."""
@@ -1375,6 +1441,8 @@ class ClusterView(Vertical):
 
     def action_toggle_nodes(self):
         """Show Nodes by hardware in place of Partitions, or back."""
+        if self.snap is not None and self.snap.single_node:
+            return  # one table shows a single node (`show_top`)
         partitions = self.tables["partitions"]
         hardware = self.tables["hardware"]
         showing = partitions.display
@@ -1429,7 +1497,7 @@ class SqtopApp(App):
         border: round $border-blurred;
         border-title-color: $text-muted;
         padding: 0 1;
-        overflow-y: auto;
+        scrollbar-size-vertical: 1;
     }
     RequestScreen { align: center middle; }
     #request-dialog {
@@ -1456,8 +1524,7 @@ class SqtopApp(App):
     #confirm-buttons Button { margin-left: 1; }
     ConfigScreen { align: center middle; }
     #config-dialog {
-        width: 124;
-        max-width: 100%;
+        width: 110;
         height: auto;
         max-height: 90%;
         border: round $border;
@@ -1479,7 +1546,6 @@ class SqtopApp(App):
     ClusterRow .resources, .cluster-heading .resources { width: 12; margin-right: 1; }
     ClusterRow Select > SelectCurrent { background: $boost; }
     ClusterRow Button { height: 1; min-width: 8; border: none; margin: 0; }
-    .cluster-heading .remove { width: 8; margin: 0; padding: 0; }
     #config-error { margin-top: 1; }
     #config-buttons { height: auto; align-horizontal: right; margin-top: 1; }
     #config-buttons Button { margin-left: 1; }

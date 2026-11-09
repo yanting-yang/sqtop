@@ -183,15 +183,6 @@ def remove_untyped_gpu_rollup(gpu_counts):
     return typed if typed else gpu_counts
 
 
-# The MIG profile ending a GPU type that is a slice: `..._1g.10gb`.
-MIG_PROFILE = re.compile(r"[_-]\d+g\.\d+gb$")
-
-
-def is_mig(gpu):
-    """Whether a GPU type is a MIG slice rather than a whole GPU."""
-    return MIG_PROFILE.search(gpu) is not None
-
-
 def normalize_gpu_rollups(node):
     """Count each node's GPUs once, by model where one is known.
 
@@ -341,7 +332,9 @@ def jobs_command(user):
     return ["squeue", "-h", "-u", user, "-o", "|".join(c for _, c in JOB_FIELDS)]
 
 
-PENDING_COMMAND = ["squeue", "-h", "-t", "PD", "-o", "%P"]
+# Every user's pending jobs as `partitions|resources|`: `tres-alloc` is what a
+# job that is not running asked for, whichever option named its GPUs.
+PENDING_COMMAND = ["squeue", "-h", "-t", "PD", "-O", "Partition:|,tres-alloc:|"]
 
 
 def parse_pending(output):
@@ -350,9 +343,27 @@ def parse_pending(output):
     A job submitted to several partitions counts toward each of them.
     """
     counts = {}
-    for line in output.split():
-        for partition in line.split(","):
-            counts[partition] = counts.get(partition, 0) + 1
+    for line in output.splitlines():
+        for partition in line.split("|")[0].split(","):
+            if partition.strip():
+                counts[partition.strip()] = counts.get(partition.strip(), 0) + 1
+    return counts
+
+
+def parse_pending_gpus(output):
+    """Count pending jobs across all users by the GPU type they ask for.
+
+    Jobs asking for no GPU count under None, and an untyped request under
+    "gpu", like an untyped GPU on a node.
+    """
+    counts = {}
+    for line in output.splitlines():
+        fields = line.split("|")
+        if len(fields) < 2:
+            continue
+        gpus = remove_untyped_gpu_rollup(parse_tres_gpus(fields[1]))
+        for gpu in gpus or [None]:
+            counts[gpu] = counts.get(gpu, 0) + 1
     return counts
 
 

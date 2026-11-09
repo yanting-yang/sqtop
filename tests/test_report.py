@@ -14,8 +14,9 @@ from test_snapshot import ASSOC_MGR, node, partition
 NOW = datetime.datetime(2026, 10, 7, 12, 0)
 
 
-def make_snapshot(jobs=()):
-    nodes = [node("a"), node("b", state="IDLE+DRAIN")]
+def make_snapshot(jobs=(), nodes=None):
+    """Two nodes in the `gpu` partition, unless `nodes` says otherwise."""
+    nodes = nodes or [node("a"), node("b", state="IDLE+DRAIN")]
     scopes = [
         Scope("guests", "limited", False, True),
         Scope("lab", "normal", True, True, user_default=True),
@@ -36,6 +37,7 @@ def make_snapshot(jobs=()):
         associations=slurm.parse_associations(ASSOC_MGR),
         jobs=list(jobs),
         notes=["sacctmgr unavailable"],
+        resources=snapshot.summarize_resources(nodes, {"l40s": 12}),
     )
 
 
@@ -121,6 +123,27 @@ class ReportTests(unittest.TestCase):
             ["--exclusive", "--mem=0"],
         )
 
+    def test_prints_a_single_nodes_hardware_in_place_of_its_partitions(self):
+        text = self.render(make_snapshot(nodes=[node("nv2")]))
+
+        self.assertIn(
+            "Hardware of nv2, mixed (free/total; CPUs exclude reserved cores):", text
+        )
+        self.assertIn("Resource | Load | Free     | Pending | Max time", text)
+        # The longest time limit of the partitions, which all share the node.
+        self.assertRegex(text, r"CPUs\s+\| 33%\s+\| 40/60\s+\| 0\s+\| 1-00:00:00")
+        self.assertRegex(text, r"Memory\s+\| 25%\s+\| 384/512G \| -\s+\| 1-00:00:00")
+        self.assertRegex(text, r"l40s\s+\| 25%\s+\| 3/4\s+\| 12\s+\| 1-00:00:00")
+        self.assertIn("Partitions on it (* default): gpu*, long\n", text)
+        self.assertNotIn("Partitions (* default):", text)
+        self.assertNotIn("Nodes by hardware", text)
+
+        # More nodes keep the partitions and the nodes by hardware.
+        both = self.render(make_snapshot())
+        self.assertIn("Partitions (* default):", both)
+        self.assertIn("Nodes by hardware", both)
+        self.assertNotIn("Hardware of", both)
+
     def test_lists_partition_usage(self):
         text = self.render(make_snapshot())
 
@@ -141,6 +164,12 @@ class ReportTests(unittest.TestCase):
         self.assertIn("Request  | 0-03:00:00 | 1-00:00:00", limited)
         self.assertIn("'-' is over the 0-03:00:00 wall-time cap", limited)
         self.assertIn("--account=guests", limited)
+        # ...and CPUs at 8 and memory at 64G per job, which the request follows.
+        self.assertIn(
+            "guests/limited (sbatch -c8 --mem=64G, capped by its limits), waits",
+            limited,
+        )
+        self.assertIn("--gpus-per-node=l40s:1 -c8 --mem=64G -t0-03:00:00", limited)
 
         normal = text[text.index("Start estimates for lab/normal") :]
         self.assertRegex(normal, r"l40s:4\s+\| no\s+\| no")
@@ -234,20 +263,6 @@ class ReportsTests(unittest.TestCase):
         ):
             self.assertIs(report.print_cluster(cluster, probes.Settings()), snap)
             self.assertIsNone(report.print_cluster(lost, probes.Settings()))
-
-    def test_applies_the_gpus_partitions_offer_from_the_profile(self):
-        profile = profiles.Profile("rcl", partition_gpus={"cpu": "none"})
-        cluster = snapshot.Cluster("rcl", profile, FakeHost())
-        info = snapshot.ClusterInfo("rcl", "25", "me", "login", None)
-
-        with (
-            patch.object(snapshot.ClusterInfo, "detect", return_value=info),
-            patch.object(snapshot, "Collector") as collector,
-            patch.object(report, "print_report"),
-        ):
-            report.print_cluster(cluster, probes.Settings())
-
-        collector.assert_called_once_with(info, cluster.host, {"cpu": "none"})
 
 
 if __name__ == "__main__":

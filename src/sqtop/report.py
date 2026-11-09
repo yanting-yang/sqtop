@@ -96,6 +96,32 @@ def print_hardware(snap, out=None):
     )
 
 
+def print_resources(snap, out=None):
+    """A single node's hardware by resource, in place of its partitions, which
+    all share it, and of Nodes by hardware."""
+    max_time = views.longest_time_limit(snap.partitions)
+    rows = [
+        (
+            row["name"],
+            f"{views.percent(row['allocated'], row['total'])}%",
+            views.resource_free(row),
+            views.resource_pending(row),
+            max_time,
+        )
+        for row in snap.resources
+    ]
+    node = snap.nodes[0]
+    print(
+        f"Hardware of {node['name']}, {snapshot.node_category(node)} "
+        "(free/total; CPUs exclude reserved cores):",
+        file=out,
+    )
+    print_table(["Resource", "Load", "Free", "Pending", "Max time"], rows, out=out)
+    if snap.partitions:
+        names = views.partition_names(snap.partitions)
+        print(f"Partitions on it (* default): {names}\n", file=out)
+
+
 def print_scopes(snap, user, out=None):
     print("Accounts & QOS (* used when omitted; ∞ no cap, ? unknown):", file=out)
     if not snap.scopes:
@@ -138,6 +164,8 @@ def print_grid(grid, now, out=None):
         request += ", GPU rows by whole node"
     if grid.sized_by_gpu:
         request += ", GPU rows without -c/--mem"
+    if grid.capped:
+        request += ", capped by its limits"
     if settings.mail_user:
         request += f", email {settings.mail_user} on {settings.mail_type}"
     print(
@@ -246,8 +274,11 @@ def print_report(info, snap, profile, settings, host, out=None):
     for note in snap.notes:
         print(f"Note: {note}", file=out)
     print(file=out)
-    print_partitions(snap, out=out)
-    print_hardware(snap, out=out)
+    if snap.single_node:
+        print_resources(snap, out=out)
+    else:
+        print_partitions(snap, out=out)
+        print_hardware(snap, out=out)
     print_scopes(snap, info.user, out=out)
     # Banner lines learned by one scope's probes also clean the next's reasons.
     banner = set()
@@ -263,9 +294,7 @@ def print_cluster(cluster, settings, out=None):
     """Print one cluster's report; return its snapshot, or None if unreachable."""
     try:
         info = snapshot.ClusterInfo.detect(cluster.host)
-        snap = snapshot.Collector(
-            info, cluster.host, cluster.profile.partition_gpus
-        ).collect()
+        snap = snapshot.Collector(info, cluster.host).collect()
         print_report(info, snap, cluster.profile, settings, cluster.host, out=out)
         return snap
     except hosts.ConnectionLost as error:

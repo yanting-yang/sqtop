@@ -17,18 +17,16 @@ import sqtop
 from sqtop import hosts, probes, profiles, snapshot, tui
 
 from test_report import fake_probe, make_snapshot
+from test_snapshot import node
 
 
 class FakeCollector:
-    def __init__(self, info, host, partition_gpus=None):
+    def __init__(self, info, host):
         self.host = host
-        self.partition_gpus = partition_gpus
-        self.collected = 0
         self.snap = make_snapshot()
         self.fail = None
 
     def collect(self):
-        self.collected += 1
         if self.host.lost:
             raise hosts.ConnectionLost(self.host.lost)
         if self.fail:
@@ -108,8 +106,8 @@ class TuiTestCase(unittest.IsolatedAsyncioTestCase):
             if text in line
         ]
         row, column = hits[nth]
-        # Inside the border and one column of padding, on the text's second cell.
-        await pilot.click(self.view.detail, offset=(column + 3, row + 1))
+        # On the text's second cell.
+        await pilot.click(self.view.detail, offset=(column + 1, row))
         await pilot.pause()
 
     def actions(self):
@@ -333,6 +331,21 @@ class DashboardTests(TuiTestCase):
             self.assertEqual(self.view.scope.label, "guests/limited")
             self.assertIn("--account=guests", self.last_probe())
             self.assertEqual(self.table("estimates").row_count, 2)
+            # limited allows 8 CPUs and 64G per job: the request follows it,
+            # while the tab's own request is still the one Edit request shows.
+            self.assertIn("-c8", self.last_probe())
+            self.assertIn("--mem=64G", self.last_probe())
+            self.assertEqual(
+                table._border_subtitle.plain,
+                "sbatch -c8 --mem=64G · capped by its limits",
+            )
+            self.assertEqual(self.view.settings.cpus, 32)
+
+            # Back on a scope without those caps, it is the request again.
+            await pilot.click(table, offset=(4, 0))
+            await self.settle(pilot)
+            self.assertEqual(self.view.scope.label, "lab/normal")
+            self.assertEqual(table._border_subtitle.plain, "sbatch -c32 --mem=128G")
 
     async def test_a_second_click_on_a_scope_row_probes_it(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
@@ -509,6 +522,98 @@ class DashboardTests(TuiTestCase):
             await pilot.pause()
             self.assertTrue(self.table("partitions").display)
             self.assertFalse(self.table("hardware").display)
+
+    async def test_scrolls_details_longer_than_the_panel(self):
+        # Like RCL's `limited` QOS: more limits than the panel has lines.
+        limits = [("QOS per job", f"limit {index}", "1", "-") for index in range(20)]
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.settle(pilot)
+            box = self.view.detail_box
+            self.assertEqual(box.max_scroll_y, 0)
+
+            with patch.object(tui.views, "limit_rows", return_value=limits):
+                await self.focus(pilot, "scopes")
+                # A caption, a header and 20 limits in a panel of 10 lines.
+                self.assertIn("limit 19", self.detail())
+                self.assertEqual(box.max_scroll_y, 12)
+                self.assertTrue(box.show_vertical_scrollbar)
+                box.scroll_end(animate=False, immediate=True)
+                await pilot.pause()
+                self.assertEqual(box.scroll_y, 12)
+
+                # A refresh of the same selection stays where it was scrolled...
+                await self.click_action(pilot, "Refresh")
+                await self.settle(pilot)
+                self.assertEqual(box.scroll_y, 12)
+                # ...and another selection starts at the top.
+                self.table("scopes").move_cursor(row=1)
+                await pilot.pause()
+                self.assertEqual(box.scroll_y, 0)
+            # The panel takes no focus: the table it follows keeps it.
+            self.assertTrue(self.table("scopes").has_focus)
+
+    async def test_shows_a_single_node_by_resource_in_place_of_its_partitions(self):
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.settle(pilot)
+            resources = self.table("resources")
+            self.assertTrue(self.table("partitions").has_focus)
+            self.assertFalse(resources.display)
+
+            # One node: every partition would repeat its hardware.
+            self.view.collector.snap = make_snapshot(nodes=[node("nv2")])
+            await self.click_action(pilot, "Refresh")
+            await self.settle(pilot)
+
+            self.assertTrue(resources.has_focus)
+            self.assertFalse(self.table("partitions").display)
+            self.assertFalse(self.table("hardware").display)
+            self.assertEqual(str(resources.border_title), "Hardware · nv2 (mixed)")
+            self.assertEqual(
+                [str(column.label) for column in resources.columns.values()],
+                ["Resource", "Load", "Free", "Pend", "Max"],
+            )
+            rows = [
+                [str(cell) for cell in resources.get_row_at(index)]
+                for index in range(resources.row_count)
+            ]
+            self.assertEqual(
+                [[row[0], *row[2:]] for row in rows],
+                [
+                    ["CPUs", "40/60", "0", "1-00:00:00"],
+                    ["Memory", "384/512G", "-", "1-00:00:00"],
+                    ["l40s", "3/4", "12", "1-00:00:00"],
+                ],
+            )
+            self.assertTrue(rows[0][1].endswith(" 33%"))
+            # Details: the resource, then the partitions sharing the node.
+            detail = self.detail()
+            self.assertIn("CPUs  on nv2 (mixed)", detail)
+            self.assertIn(
+                "40 free / 20 allocated / 0 unavailable of 60 · "
+                "pending jobs asking for no GPU: 0",
+                detail,
+            )
+            self.assertIn(
+                "gpu*  usable · max time 0-03:00:00 · pending jobs 12", detail
+            )
+            self.assertIn("long  usable · max time 1-00:00:00 · pending jobs 0", detail)
+            await self.click_row(pilot, "resources", 2)
+            self.assertIn("pending jobs asking for it: 12", self.detail())
+
+            # Its title switches to nothing: there is one table.
+            await pilot.click(resources, offset=(4, 0))
+            await pilot.pause()
+            self.app.action_toggle_nodes()
+            self.assertTrue(resources.display)
+            self.assertFalse(self.table("hardware").display)
+
+            # More nodes bring the partitions back.
+            self.view.collector.snap = make_snapshot()
+            await self.click_action(pilot, "Refresh")
+            await self.settle(pilot)
+            self.assertFalse(resources.display)
+            self.assertTrue(self.table("partitions").has_focus)
+            self.assertIn("gpu", self.detail())
 
     async def test_switches_sbatch_and_srun_from_the_estimates_border(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
@@ -1162,52 +1267,6 @@ class ConfigTests(TuiTestCase):
             self.assertEqual(self.view.profile.resources, "by_gpu")
             self.assertEqual(len(self.here.streamed), probed + 1)
             self.assertNotIn("-c32", self.last_probe())
-
-    async def test_collects_again_when_partitions_offer_other_gpus(self):
-        async with self.app.run_test(size=(150, 44)) as pilot:
-            await self.settle(pilot)
-            collector = self.view.collector
-            collected, probed = collector.collected, len(self.here.streamed)
-            await self.open_form(pilot)
-            row = await self.add_row(
-                pilot, name="here", partition_gpus="mig=mig full=whole"
-            )
-            self.assertEqual(
-                row.values(), ("here", {"partition_gpus": "mig=mig full=whole"})
-            )
-
-            messages = await self.save(pilot)
-
-            self.assertEqual(messages, [f"Saved {self.path}. Reloaded: here profile."])
-            self.assertEqual(
-                self.saved()["clusters"]["here"],
-                {"partition_gpus": "mig=mig full=whole"},
-            )
-            self.assertEqual(self.view.profile.partition_gpus["full"], "whole")
-            self.assertEqual(collector.partition_gpus, {"mig": "mig", "full": "whole"})
-            self.assertEqual(collector.collected, collected + 1)
-            # The estimates do not depend on it, so nothing is probed again...
-            self.assertEqual(len(self.here.streamed), probed)
-            # ...and a tab never opened is not contacted for it.
-            self.assertEqual(self.contacted, [None])
-
-            # The form opens on it again.
-            await self.open_form(pilot)
-            self.assertEqual(
-                self.rows()[-1].field("partition-gpus"), "mig=mig full=whole"
-            )
-
-    async def test_refuses_an_invalid_partition_gpus_rule(self):
-        async with self.app.run_test(size=(150, 44)) as pilot:
-            await self.settle(pilot)
-            await self.open_form(pilot)
-            self.fill_row(self.rows()[0], partition_gpus="mig=some")
-
-            self.assertEqual(await self.save(pilot), [])
-
-            self.assertIsInstance(self.app.screen, tui.ConfigScreen)
-            self.assertIn("partition_gpus must be", self.form_error())
-            self.assertEqual(self.path.read_text(), FIR)
 
     async def test_applies_a_changed_mail_table_to_every_tab(self):
         async with self.app.run_test(size=(150, 44)) as pilot:

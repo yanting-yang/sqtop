@@ -130,6 +130,66 @@ class MaxGpuCountTests(unittest.TestCase):
         )
 
 
+class CapRequestTests(unittest.TestCase):
+    """The request brought down to its account/QOS's CPU and memory caps."""
+
+    # Like RCL's `limited` QOS: 8 CPUs and 64G per job; 64 CPUs per user.
+    LIMITS = (
+        Limit("QOS per job", "CPUs", "tres:cpu", 8),
+        Limit("QOS per job", "memory", "tres:mem", 65536),
+        Limit("QOS per user", "CPUs", "tres:cpu", 64),
+    )
+
+    def test_reads_and_writes_mem_sizes(self):
+        for text, megabytes in [
+            ("128G", 131072),
+            ("64g", 65536),
+            ("500M", 500),
+            ("4096", 4096),
+            ("1T", 1048576),
+            ("2.5G", 2560),
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(probes.memory_megabytes(text), megabytes)
+        self.assertIsNone(probes.memory_megabytes("lots"))
+        self.assertIsNone(probes.memory_megabytes(""))
+        self.assertEqual(probes.format_memory(65536), "64G")
+        self.assertEqual(probes.format_memory(64000), "64000M")
+
+    def test_brings_cpus_and_memory_down_to_the_tightest_cap(self):
+        request = Settings(mail_user="me@example.com", extra=("--constraint=ib",))
+
+        capped = probes.cap_request(request, self.LIMITS)
+
+        self.assertEqual((capped.cpus, capped.mem), (8, "64G"))
+        self.assertEqual(capped.describe(), "sbatch -c8 --mem=64G --constraint=ib")
+        # The rest of the request survives.
+        self.assertEqual(capped.mail_user, "me@example.com")
+        # Only what is over its cap changes.
+        mixed = probes.cap_request(Settings(cpus=4, mem="100G"), self.LIMITS)
+        self.assertEqual((mixed.cpus, mixed.mem), (4, "64G"))
+
+    def test_leaves_a_request_within_the_caps_alone(self):
+        own = Settings(cpus=8, mem="64G")
+
+        self.assertIs(probes.cap_request(own, self.LIMITS), own)
+        plain = Settings()
+        self.assertIs(probes.cap_request(plain, []), plain)
+        # A cap that is unknown or zero is no cap to ask for.
+        unknown = [
+            Limit("QOS per job", "CPUs", "tres:cpu", "?"),
+            Limit("QOS per job", "memory", "tres:mem", 0),
+        ]
+        self.assertEqual(probes.cap_request(Settings(), unknown), Settings())
+
+    def test_leaves_whole_nodes_and_sizes_it_cannot_read_alone(self):
+        whole = Settings(whole_node=True)
+        self.assertIs(probes.cap_request(whole, self.LIMITS), whole)
+
+        odd = probes.cap_request(Settings(mem="lots"), self.LIMITS)
+        self.assertEqual((odd.cpus, odd.mem), (8, "lots"))
+
+
 class WalltimePlanTests(unittest.TestCase):
     PARTITIONS = [
         {"max_time": 180, "usable": True},
@@ -404,6 +464,42 @@ class BuildGridTests(unittest.TestCase):
         self.assertEqual(
             [request.label for request in whole.requests], ["l40s:4", "CPU only"]
         )
+
+    def test_caps_the_request_at_the_scopes_cpu_and_memory_limits(self):
+        nodes = [{"name": "a", "cfg_gpus": {"l40s": 4}, "partitions": ["gpu"]}]
+        partitions = [{"name": "gpu", "max_time": 180, "usable": True}]
+        snap = Mock(nodes=nodes, partitions=partitions)
+        snap.limits.return_value = [
+            Limit("QOS per job", "CPUs", "tres:cpu", 8),
+            Limit("QOS per job", "memory", "tres:mem", 65536),
+            Limit("QOS per job", "GPUs", "tres:gres/gpu", 1),
+        ]
+        info = snapshot.ClusterInfo("c", "1", "me", "login", None)
+
+        grid = probes.build_grid(snap, Scope(), Settings(), GENERIC, info)
+
+        # Probed, shown and submitted with what the scope allows.
+        self.assertTrue(grid.capped)
+        self.assertEqual(grid.settings.describe(), "sbatch -c8 --mem=64G")
+        self.assertEqual(
+            grid.probe_directives(0, 0),
+            [
+                "--test-only",
+                "--gpus-per-node=l40s:1",
+                "-c8",
+                "--mem=64G",
+                "-t0-03:00:00",
+            ],
+        )
+        self.assertEqual(
+            grid.run_directives(1, 0), ["-c8", "--mem=64G", "-t0-03:00:00"]
+        )
+
+        # A request within the caps is the user's own.
+        own = Settings(cpus=4, mem="16G")
+        grid = probes.build_grid(snap, Scope(), own, GENERIC, info)
+        self.assertFalse(grid.capped)
+        self.assertIs(grid.settings, own)
 
     def test_asks_for_whole_gpu_nodes_where_gpus_go_by_node(self):
         nodes = [{"name": "a", "cfg_gpus": {"h100": 4}, "partitions": ["gpu"]}]

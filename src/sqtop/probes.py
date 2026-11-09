@@ -95,6 +95,43 @@ class Settings:
         return [f"--mail-type={self.mail_type}", f"--mail-user={self.mail_user}"]
 
 
+# `--mem` units in MB; a bare number is MB.
+MEMORY_UNITS = {"K": 1 / 1024, "M": 1, "G": 1024, "T": 1024 * 1024}
+
+
+def memory_megabytes(text):
+    """A `--mem` size (`32G`, `500M`, `4096`) in MB, or None if it is not one."""
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([KMGT])?B?", text.strip().upper())
+    if not match:
+        return None
+    return float(match.group(1)) * MEMORY_UNITS[match.group(2) or "M"]
+
+
+def format_memory(megabytes):
+    """MB the way `--mem` takes it: in G when that is whole, else in M."""
+    return f"{megabytes // 1024}G" if megabytes % 1024 == 0 else f"{megabytes}M"
+
+
+def cap_request(settings, limits):
+    """`settings` with CPUs and memory brought down to the caps in `limits`.
+
+    A job asking for more than its account/QOS allows (per job, user or
+    account) can never run, so every probe would only repeat that rejection.
+    A whole node asks for neither, so it is left alone.
+    """
+    if settings.whole_node:
+        return settings
+    capped = {}
+    cpus = snapshot.tightest(limits, "tres:cpu")
+    if cpus and cpus < settings.cpus:
+        capped["cpus"] = cpus
+    memory = snapshot.tightest(limits, "tres:mem")
+    asked = memory_megabytes(settings.mem)
+    if memory and asked is not None and memory < asked:
+        capped["mem"] = format_memory(memory)
+    return dataclasses.replace(settings, **capped) if capped else settings
+
+
 @dataclasses.dataclass(frozen=True)
 class Result:
     start: datetime.datetime | None
@@ -129,6 +166,9 @@ class Grid:
     # submission (RCL's storage policy, Fir's memory units), which
     # `clean_message` leaves out of reasons. Grids of one cluster may share it.
     banner: set = dataclasses.field(default_factory=set)
+    # Whether `settings` is the user's request brought down to the scope's
+    # CPU and memory caps (`cap_request`).
+    capped: bool = False
 
     @property
     def gpus_by_node(self):
@@ -316,9 +356,11 @@ def build_grid(snap, scope, settings, profile, info):
     limits = snap.limits(scope, info.user)
     capacities = snapshot.gpu_capacities(usable_nodes(snap))
     usable = [partition for partition in snap.partitions if partition["usable"]]
+    request = cap_request(settings, limits)
     return Grid(
         scope=scope,
-        settings=settings,
+        settings=request,
+        capped=request != settings,
         requests=plan_requests(
             capacities,
             max_gpu_counts(capacities, limits),
