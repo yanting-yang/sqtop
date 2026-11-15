@@ -41,6 +41,32 @@ def detect(host):
     return snapshot.ClusterInfo(name, "25.05", "me", "login", None, ssh=host.ssh)
 
 
+def queued_job(job_id, state="RUNNING", **fields):
+    """A job of the caller's as `squeue` lists it: 8 CPUs, 64G and a GPU slice."""
+    running = state == "RUNNING"
+    return {
+        "id": job_id,
+        "state": state,
+        "name": "train",
+        "partition": "gpu",
+        "account": "lab",
+        "qos": "normal",
+        "time_limit": "3:00:00",
+        "submit": "2026-10-14T08:00:00",
+        "cpus": "8",
+        "mem": "64G",
+        "nodes": "1",
+        "tres": "gres/gpu:nvidia_b200_3g.90gb:1",
+        "elapsed": "1:02:03" if running else "0:00",
+        "start": "2026-10-14T08:42:05",
+        "reason": "None" if running else "Priority",
+        "nodelist": "kn001" if running else "",
+        "sched_nodes": "(null)",
+        "time_left": "1:57:57" if running else "3:00:00",
+        **fields,
+    }
+
+
 class TuiTestCase(unittest.IsolatedAsyncioTestCase):
     """A dashboard with this cluster ("here") and a remote one ("fir")."""
 
@@ -144,6 +170,23 @@ class TuiTestCase(unittest.IsolatedAsyncioTestCase):
     async def settle(self, pilot):
         await pilot.app.workers.wait_for_complete()
         await pilot.pause()
+
+
+class UsageBarTests(unittest.TestCase):
+    def test_draws_the_share_in_use_with_its_percent(self):
+        self.assertEqual(tui.usage_bar(0.3).plain, "██████░░░░░░░░░░░░░░  30%")
+        self.assertEqual(tui.usage_bar(0).plain, "░" * 20 + "   0%")
+        self.assertEqual(tui.usage_bar(1).plain, "█" * 20 + " 100%")
+
+    def test_warns_only_where_a_full_bar_is_a_limit(self):
+        def style(bar):
+            return str(bar.spans[0].style)
+
+        # Busy CPUs and GPUs are good use; memory near what the job holds is not.
+        self.assertEqual(style(tui.usage_bar(0.95)), "green")
+        self.assertEqual(style(tui.usage_bar(0.5, limit=True)), "green")
+        self.assertEqual(style(tui.usage_bar(0.75, limit=True)), "yellow")
+        self.assertEqual(style(tui.usage_bar(0.95, limit=True)), "red")
 
 
 class CommandLineTests(unittest.TestCase):
@@ -522,6 +565,152 @@ class DashboardTests(TuiTestCase):
             await pilot.pause()
             self.assertTrue(self.table("partitions").display)
             self.assertFalse(self.table("hardware").display)
+
+    def answer_sstat(self, cpu_times, clock=("1000.0", "1010.0", "1020.0")):
+        """Have this cluster answer usage samples: sstat's CPU time and the
+        clock advance with each one, for a job with 8 CPUs, 64G and a 90 GB
+        GPU slice that holds 16G of memory and 22432M of GPU memory."""
+        cpu_times, clock = iter(cpu_times), iter(clock)
+
+        def sstat(args):
+            cpu = next(cpu_times)
+            return (
+                f"101.extern|energy=0|energy=0\n"
+                f"101.batch|cpu={cpu},mem=16777216K,gres/gpumem=22432M,"
+                f"gres/gpuutil=0|cpu={cpu},mem=20971520K\n"
+            )
+
+        held = "cpu=8,mem=64G,node=1,gres/gpu=1,gres/gpu:nvidia_b200_3g.90gb=1|\n"
+        self.here.responses = {
+            "sstat": sstat,
+            "squeue -h -j": held,
+            "date": lambda args: next(clock) + "\n",
+        }
+
+    async def show_jobs(self, pilot, *jobs):
+        """List `jobs` in My jobs, leaving the details on the partitions."""
+        await self.settle(pilot)
+        self.view.collector.snap.jobs = list(jobs)
+        await self.click_action(pilot, "Refresh")
+        await self.settle(pilot)
+
+    async def test_shows_a_running_jobs_usage_as_meters(self):
+        self.answer_sstat(["00:01:40", "00:02:04"])
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.show_jobs(pilot, queued_job("101"), queued_job("102", "PENDING"))
+            self.assertEqual(self.here.batches, [])  # nothing until it is shown
+            waiting = self.view.job_usage(self.view.snap.jobs[0])
+            self.assertEqual([str(line) for line in waiting], ["Usage: asking sstat…"])
+
+            await self.focus(pilot, "jobs")
+            await self.settle(pilot)
+
+            # One session: sstat, the clock and, the first time, what it holds.
+            self.assertEqual(
+                [[args[0] for args in batch] for batch in self.here.batches],
+                [["sstat", "date", "squeue"]],
+            )
+            self.assertRegex(
+                self.detail_rows("CPU")[0],
+                r"^measuring, of 8 cores · sstat \d\d:\d\d:\d\d$",
+            )
+            self.assertEqual(
+                self.detail_rows("Memory"),
+                ["█████░░░░░░░░░░░░░░░  25%  16.0 of 64 GB · peak 20.0 GB"],
+            )
+            # A slice has no utilization to report, but its type names its memory.
+            self.assertEqual(
+                self.detail_rows("GPU "),
+                ["utilization is not reported for MIG slices (1 nvidia_b200_3g.90gb)"],
+            )
+            self.assertEqual(
+                self.detail_rows("GPU mem"),
+                ["█████░░░░░░░░░░░░░░░  24%  21.9 of 90 GB"],
+            )
+            # The commands still follow.
+            self.assertEqual(len(self.detail_rows("Attach")), 1)
+
+            # CPU use is a rate: 24 CPU seconds in 10 seconds, on 8 cores.
+            self.view.refresh_usage()
+            await self.settle(pilot)
+            self.assertEqual(
+                [[args[0] for args in batch] for batch in self.here.batches[1:]],
+                [["sstat", "date"]],
+            )
+            self.assertRegex(
+                self.detail_rows("CPU")[0],
+                r"^██████░░░░░░░░░░░░░░  30%  2.4 of 8 cores · sstat \d\d:\d\d:\d\d$",
+            )
+
+            # A pending job has no usage, and none is asked for.
+            self.table("jobs").move_cursor(row=1)
+            await self.settle(pilot)
+            self.assertNotIn("CPU ", self.detail())
+            self.assertNotIn("Usage", self.detail())
+            self.view.refresh_usage()
+            await self.settle(pilot)
+            self.assertEqual(len(self.here.batches), 2)
+
+    async def test_samples_usage_only_of_the_job_whose_details_are_shown(self):
+        self.answer_sstat(["00:01:40"] * 3)
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.show_jobs(pilot, queued_job("101"))
+
+            # The details follow the partitions: no job is looked at.
+            self.app.refresh_usage()
+            await self.settle(pilot)
+            self.assertEqual(self.here.batches, [])
+
+            # Nor while the estimates are probed, which use the ssh sessions.
+            self.view.probing = True
+            await self.focus(pilot, "jobs")
+            await self.settle(pilot)
+            self.assertEqual(self.here.batches, [])
+            self.assertIn("Usage: after the start estimates…", self.detail())
+            # The probes of an older request do not count...
+            self.view.probes_done(object())
+            await self.settle(pilot)
+            self.assertEqual(self.here.batches, [])
+            # ...and once the current ones are done, the sample is taken.
+            self.view.probes_done(self.view.grid)
+            await self.settle(pilot)
+            self.assertEqual(len(self.here.batches), 1)
+            self.assertEqual(len(self.detail_rows("Memory")), 1)
+
+            # A tab that is not shown samples nothing.
+            await self.open_tab(pilot, 1)
+            await self.settle(pilot)
+            self.app.views[0].refresh_usage()
+            await self.settle(pilot)
+            self.assertEqual(len(self.here.batches), 1)
+
+    async def test_says_when_sstat_has_no_usage_and_survives_a_lost_connection(self):
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.show_jobs(pilot, queued_job("101"))
+            # This cluster answers nothing, as for a job whose steps just ended.
+            await self.focus(pilot, "jobs")
+            await self.settle(pilot)
+            self.assertIn("Usage: sstat reports none for this job", self.detail())
+            self.assertFalse(self.view.sampling)
+
+            # A sample that ssh could not fetch leaves the last reading alone.
+            self.answer_sstat(["00:01:40"])
+            self.view.refresh_usage()
+            await self.settle(pilot)
+            self.assertEqual(len(self.detail_rows("Memory")), 1)
+            self.here.lost = "timed out"
+            self.view.refresh_usage()
+            await self.settle(pilot)
+            self.assertFalse(self.view.sampling)
+            self.assertEqual(len(self.detail_rows("Memory")), 1)
+            self.assertEqual(len(self.view.usage["101"]), 1)
+
+            # Usage is kept only for the jobs still queued.
+            self.here.lost = None
+            self.view.collector.snap.jobs = []
+            await self.click_action(pilot, "Refresh")
+            await self.settle(pilot)
+            self.assertEqual(self.view.usage, {})
 
     async def test_scrolls_details_longer_than_the_panel(self):
         # Like RCL's `limited` QOS: more limits than the panel has lines.

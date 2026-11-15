@@ -1029,5 +1029,128 @@ class ParseAssociationsTests(unittest.TestCase):
         self.assertEqual(len(slurm.parse_associations(ASSOCIATIONS)), 3)
 
 
+# One step of `sstat -a -n -P -j <job> -o JobID,TRESUsageInTot,TRESUsageInMax`
+# on RCL, where the site gathers GPU use: a whole GPU at 87%, holding 65022M.
+GPU_STEP = (
+    "45079.batch|cpu=00:04:27,energy=0,fs/disk=32769419333,gres/gpumem=65022M,"
+    "gres/gpuutil=87,mem=4844352K,pages=538,vmem=0|cpu=00:04:27,energy=0,"
+    "fs/disk=32769419333,gres/gpumem=65022M,gres/gpuutil=87,mem=5252040K,"
+    "pages=538,vmem=0\n"
+)
+
+
+class UsageTests(unittest.TestCase):
+    def test_asks_sstat_for_every_running_step(self):
+        self.assertEqual(
+            slurm.usage_command(101),
+            [
+                "sstat",
+                "-a",
+                "-n",
+                "-P",
+                "-j",
+                "101",
+                "-o",
+                "JobID,TRESUsageInTot,TRESUsageInMax",
+            ],
+        )
+        self.assertEqual(
+            slurm.allocation_command("101"),
+            ["squeue", "-h", "-j", "101", "-O", "tres-alloc:|"],
+        )
+        self.assertEqual(slurm.CLOCK_COMMAND, ["date", "+%s.%N"])
+
+    def test_reads_amounts_of_memory_in_megabytes(self):
+        for text, megabytes in [
+            ("792K", 0.7734375),
+            ("22432M", 22432),
+            ("128G", 131072),
+            ("1.5g", 1536),
+            ("2T", 2 * 1024 * 1024),
+            ("1048576", 1),  # a bare number is bytes
+            ("0", 0),
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(slurm.parse_size(text), megabytes)
+        self.assertIsNone(slurm.parse_size("lots"))
+        self.assertIsNone(slurm.parse_size(""))
+
+    def test_splits_a_tres_list_whose_names_hold_colons(self):
+        self.assertEqual(
+            slurm.split_tres("cpu=00:02:05,gres/gpu:nvidia_b200=1,mem=64G,,x"),
+            {"cpu": "00:02:05", "gres/gpu:nvidia_b200": "1", "mem": "64G"},
+        )
+
+    def test_reads_a_steps_cpu_time_memory_and_gpu_use(self):
+        self.assertEqual(
+            slurm.parse_usage(GPU_STEP),
+            {
+                "steps": {"45079.batch": 267.0},
+                "mem": 4844352 / 1024,
+                "mem_peak": 5252040 / 1024,
+                "gpu_util": 87.0,
+                "gpu_mem": 65022.0,
+            },
+        )
+
+    def test_sums_the_steps_and_skips_the_extern_one(self):
+        steps = (
+            "7.extern|energy=0|energy=0\n"
+            "7.batch|cpu=00:00:10,mem=1024K|cpu=00:00:10,mem=4096K\n"
+            "7.0|cpu=1-00:00:00,mem=2048K,gres/gpumem=1024M,gres/gpuutil=40|"
+            "cpu=1-00:00:00,mem=3072K\n"
+            "7.1|cpu=00:01:00,mem=1024K,gres/gpumem=512M,gres/gpuutil=50|"
+            "cpu=00:01:00,mem=1024K\n"
+        )
+
+        usage = slurm.parse_usage(steps)
+
+        self.assertEqual(usage["steps"], {"7.batch": 10.0, "7.0": 86400.0, "7.1": 60.0})
+        self.assertEqual(usage["mem"], 4.0)
+        # The largest task's peak, not a sum of peaks at different times.
+        self.assertEqual(usage["mem_peak"], 4.0)
+        self.assertEqual(usage["gpu_util"], 90.0)
+        self.assertEqual(usage["gpu_mem"], 1536.0)
+
+    def test_leaves_gpu_use_unknown_where_the_site_gathers_none(self):
+        usage = slurm.parse_usage("7.batch|cpu=00:00:10,mem=1024K|cpu=00:00:10\n")
+
+        self.assertIsNone(usage["gpu_util"])
+        self.assertIsNone(usage["gpu_mem"])
+        self.assertEqual(usage["mem_peak"], 0.0)
+
+    def test_has_no_usage_without_a_running_step(self):
+        # sstat prints only an error for a pending or finished job.
+        self.assertIsNone(slurm.parse_usage(""))
+        self.assertIsNone(slurm.parse_usage("7.extern|energy=0|energy=0\n"))
+        self.assertIsNone(slurm.parse_usage("sstat: error: no steps\n"))
+
+    def test_reads_what_a_job_holds(self):
+        self.assertEqual(
+            slurm.parse_allocation(
+                "cpu=32,mem=128G,node=1,billing=97600,gres/gpu=8,gres/gpu:h100=8|\n"
+            ),
+            {"cpus": 32, "mem": 131072.0, "gpus": {"h100": 8}},
+        )
+        self.assertEqual(
+            slurm.parse_allocation("cpu=4,mem=8G,node=1,billing=1|\n"),
+            {"cpus": 4, "mem": 8192.0, "gpus": {}},
+        )
+        # An untyped GPU, as where accounting does not track models.
+        self.assertEqual(
+            slurm.parse_allocation("cpu=24,mem=186000M,gres/gpu=1|")["gpus"],
+            {"gpu": 1},
+        )
+        self.assertIsNone(slurm.parse_allocation(""))
+        self.assertIsNone(slurm.parse_allocation("\n"))
+
+    def test_reads_a_mig_slices_memory_from_its_type(self):
+        self.assertEqual(slurm.mig_memory("nvidia_b200_3g.90gb"), 90)
+        self.assertEqual(slurm.mig_memory("nvidia_b300_sxm6_ac_2g.67gb"), 67)
+        self.assertEqual(slurm.mig_memory("nvidia_h100_80gb_hbm3_1g.10gb"), 10)
+        for whole in ("nvidia_b200", "nvidia_h100_80gb_hbm3", "h100", "gpu"):
+            self.assertIsNone(slurm.mig_memory(whole), whole)
+
+
 if __name__ == "__main__":
     unittest.main()

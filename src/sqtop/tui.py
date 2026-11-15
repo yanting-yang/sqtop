@@ -12,6 +12,9 @@ the clusters shown so far on or off (it stops when the dashboard exits), opens
 the config form (`ConfigScreen`, which saves the config file and applies it)
 and quits. With no cluster to show (no Slurm here and none with an ssh host),
 there are no tabs: the dashboard opens on the config form to add one.
+
+The details of a running job also show its live usage (`usage`), sampled
+every `USAGE_SECONDS` while they are on screen.
 """
 
 import dataclasses
@@ -42,7 +45,17 @@ from textual.widgets import (
 )
 from textual.worker import get_current_worker
 
-from . import __version__, hosts, mailer, probes, profiles, slurm, snapshot, views
+from . import (
+    __version__,
+    hosts,
+    mailer,
+    probes,
+    profiles,
+    slurm,
+    snapshot,
+    usage,
+    views,
+)
 from .profiles import Profile
 
 REFRESH_SECONDS = 60
@@ -50,6 +63,12 @@ REFRESH_SECONDS = 60
 STALE_AFTER = datetime.timedelta(seconds=REFRESH_SECONDS)
 # Re-probe on a refresh once the estimates are this old.
 PROBE_MAX_AGE = datetime.timedelta(minutes=5)
+# A running job's usage is sampled this often while its details are shown,
+# and once more soon after they first are: CPU use takes two samples.
+USAGE_SECONDS = 10
+USAGE_SOON_SECONDS = 3
+# In place of a usage sample that ssh could not fetch.
+UNREACHED = object()
 # Below this width the 2x2 grid cannot fit D-HH:MM:SS columns, so panels stack.
 NARROW_WIDTH = 135
 
@@ -78,6 +97,24 @@ def load_bar(allocated, free, total, width=8):
     bar.append("█" * cells[0], style=style)
     bar.append("▒" * cells[1], style="grey42")
     bar.append("░" * cells[2], style="grey35")
+    bar.append(f" {percent:>3}%")
+    return bar
+
+
+def usage_bar(fraction, limit=False, width=20):
+    """A meter like htop's: the share in use as a bar, with its percent.
+
+    A full bar is good use of CPUs and GPUs, but a warning for memory, which
+    has a `limit` to stay under.
+    """
+    percent = round(100 * fraction)
+    style = "green"
+    if limit and percent >= 70:
+        style = "red" if percent >= 90 else "yellow"
+    filled = round(width * fraction)
+    bar = Text()
+    bar.append("█" * filled, style=style)
+    bar.append("░" * (width - filled), style="grey35")
     bar.append(f" {percent:>3}%")
     return bar
 
@@ -477,6 +514,13 @@ class ClusterView(Vertical):
         # The selection the details show (table, row, column), to tell a new
         # one, which starts at the top, from a refresh of the same one.
         self.detail_shown = None
+        # Usage of running jobs by id: the recent samples (`usage.add`), or
+        # None once sstat reported nothing.
+        self.usage = {}
+        # True while a usage sample is being taken.
+        self.sampling = False
+        # True while the estimates are probed, when usage is not sampled.
+        self.probing = False
         # True from starting a collection until its outcome is shown. Kept
         # here rather than read from the worker, which is still winding down
         # when its outcome arrives, so a refresh asked for then is not dropped.
@@ -659,6 +703,9 @@ class ClusterView(Vertical):
         self.fill_resources()
         self.show_top()
         self.fill_jobs()
+        # Usage is kept for the jobs still queued.
+        queued = {job["id"] for job in snap.jobs or []}
+        self.usage = {job: seen for job, seen in self.usage.items() if job in queued}
         if self.scope not in snap.scopes:
             self.scope = snap.preferred_scope()
         self.fill_scopes()
@@ -933,6 +980,7 @@ class ClusterView(Vertical):
         self.probed_at = datetime.datetime.now()
         self.fill_estimates()
         self.fill_scopes()
+        self.probing = True
         self.run_probes(self.grid)
 
     @work(thread=True, exclusive=True, group="probes")
@@ -952,6 +1000,21 @@ class ClusterView(Vertical):
                 f"{self.cluster.name}: probes failed: {error!r}",
                 severity="error",
             )
+        finally:
+            # Probes cancelled for newer ones, or as the app exits, report none.
+            if not worker.is_cancelled:
+                self.app.call_from_thread(self.probes_done, grid)
+
+    def probes_done(self, grid):
+        """Usage is sampled again once the estimates are probed.
+
+        Probes take the ssh sessions sqtop allows itself and keep the
+        scheduler busy, so a sample taken meanwhile could be refused a
+        session (sshd's MaxSessions) and would take many seconds anyway.
+        """
+        if grid is self.grid:
+            self.probing = False
+            self.refresh_usage()
 
     def probe_landed(self, grid, row, column):
         if grid is not self.grid:
@@ -1003,6 +1066,7 @@ class ClusterView(Vertical):
         if shown != self.detail_shown:
             self.detail_shown = shown
             self.detail_box.scroll_home(animate=False, immediate=True)
+            self.refresh_usage()
         if source == "partitions":
             detail.update(self.partition_detail(self.snap.partitions[row]))
         elif source == "hardware":
@@ -1244,8 +1308,88 @@ class ClusterView(Vertical):
                 f"{slurm.normalize_time(job['time_limit'])}, "
                 f"{views.job_time_left(job)} left"
             ),
+            *self.job_usage(job),
             *self.job_commands(job),
         )
+
+    # --- Job usage -----------------------------------------------------------
+
+    def usage_job(self):
+        """The running job whose details are shown: the one whose usage is
+        sampled. Nothing else is, so a job costs sstat calls only while the
+        user looks at it."""
+        if self.detail_from != "jobs" or self.error is not None:
+            return None
+        jobs = self.snap.jobs if self.snap is not None else None
+        row = self.tables["jobs"].cursor_row
+        if not jobs or row >= len(jobs) or jobs[row]["state"] != "RUNNING":
+            return None
+        return jobs[row]
+
+    def refresh_usage(self):
+        """Take a usage sample of `usage_job`, unless one is being taken."""
+        job = self.usage_job()
+        if job is None or self.app.view is not self:
+            return
+        if self.sampling or self.probing:  # `probes_done` samples afterwards
+            return
+        self.sampling = True
+        seen = self.usage.get(job["id"]) or [None]
+        self.sample_usage(job["id"], seen[-1])
+
+    @work(thread=True, group="usage", exit_on_error=False)
+    def sample_usage(self, job_id, earlier):
+        worker = get_current_worker()
+        sample = None
+        try:
+            sample = usage.take(self.host, job_id, earlier)
+        except hosts.ConnectionLost:
+            # The next refresh says why the cluster cannot be reached.
+            sample = UNREACHED
+        finally:
+            if not worker.is_cancelled:  # the tab was closed, or the app exits
+                self.app.call_from_thread(self.usage_landed, job_id, sample)
+
+    def usage_landed(self, job_id, sample):
+        self.sampling = False
+        seen = self.usage.get(job_id) or []
+        if sample is not UNREACHED:
+            self.usage[job_id] = None if sample is None else usage.add(seen, sample)
+        job = self.usage_job()
+        if job is None:
+            return
+        if job["id"] != job_id:  # the selection moved on while this was taken
+            self.refresh_usage()
+            return
+        self.show_detail()
+        if not seen and self.usage.get(job_id):
+            # CPU use takes two samples, so a first one is followed soon.
+            self.set_timer(USAGE_SOON_SECONDS, self.refresh_usage)
+
+    def job_usage(self, job):
+        """A running job's usage as meters, like htop's and nvitop's."""
+        if job["state"] != "RUNNING":
+            return []
+        if job["id"] not in self.usage:
+            waiting = "after the start estimates…" if self.probing else "asking sstat…"
+            return [Text(f"Usage: {waiting}", style="dim")]
+        samples = self.usage[job["id"]]
+        if samples is None:
+            return [Text("Usage: sstat reports none for this job", style="dim")]
+        taken = datetime.datetime.fromtimestamp(samples[-1].taken)
+        lines = []
+        for index, row in enumerate(usage.rows(samples)):
+            # Labels line up with those of the commands below.
+            line = Text(f"{row.label:<9}", style="bold cyan")
+            if row.fraction is None:
+                line.append(row.text, style="dim")
+            else:
+                line.append_text(usage_bar(row.fraction, row.limit))
+                line.append(f"  {row.text}", style="default")
+            if not index:
+                line.append(f" · sstat {taken:%H:%M:%S}", "dim")
+            lines.append(line)
+        return lines
 
     def job_commands(self, job):
         """Commands for a queued job: a shell attached to it, and releasing it."""
@@ -1586,6 +1730,7 @@ class SqtopApp(App):
         self.views = list(self.query(ClusterView))
         self.show_clusters()
         self.set_interval(REFRESH_SECONDS, self.refresh_visible)
+        self.set_interval(USAGE_SECONDS, self.refresh_usage)
         self.set_interval(1, self.update_status)
         if self.views:
             self.view.activate()
@@ -1631,6 +1776,11 @@ class SqtopApp(App):
         """
         if self.view is not None and self.view.snap is not None:
             self.view.refresh_snapshot()
+
+    def refresh_usage(self):
+        """The usage of the running job the visible tab's details show."""
+        if self.view is not None:
+            self.view.refresh_usage()
 
     def update_status(self):
         if self.view is not None:

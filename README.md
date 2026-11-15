@@ -17,7 +17,8 @@ any cluster you can reach over ssh.
   partition or per kind of node, and which partitions your accounts may use.
 - **Your limits.** Every account/QOS pair you can use, with its job, GPU and wall-time
   caps and your fair share, read from Slurm even where `sacctmgr` does not work.
-- **Your jobs.** Running and pending jobs, with expected start times and planned nodes.
+- **Your jobs.** Running and pending jobs, with expected start times and planned nodes,
+  and for a running job its live CPU, memory and GPU usage, like `htop` and `nvitop`.
 - **One click to act.** Submit any estimate's `sbatch` command, copy any command, or
   release a job, each after you confirm.
 - **Several clusters in one window.** A tab per cluster over ssh, from a login node or
@@ -137,6 +138,24 @@ The bottom bar also shows which version of sqtop is running.
   would land in, the probe with the scheduler's reply, and the command to submit the
   same request, each with `Copy`. For a job it shows the command that attaches a shell
   to it (`srun --jobid=<id> --overlap --pty <shell>`) and the one that releases it.
+- **Job usage.** The details of a running job show meters like `htop`'s and `nvitop`'s:
+  the CPUs it keeps busy out of those it holds, its memory in use and the peak, and for
+  its GPUs their utilization and memory.
+
+  ```
+  CPU      ██████░░░░░░░░░░░░░░  30%  2.4 of 8 cores · sstat 13:44:21
+  Memory   █████░░░░░░░░░░░░░░░  25%  16.0 of 64 GB · peak 20.0 GB
+  GPU      utilization is not reported for MIG slices (1 nvidia_b200_3g.90gb)
+  GPU mem  █████░░░░░░░░░░░░░░░  24%  21.9 of 90 GB
+  ```
+
+  The numbers come from Slurm's `sstat`, so nothing is started inside the job. They are
+  sampled every 10 seconds, only for the job whose details are on screen, and not while
+  start estimates are being probed. CPU use is measured between samples, so it appears a
+  few seconds after the rest. GPU use is shown where the cluster gathers it (RCL and Fir
+  do; Nibi and Killarney do not). A MIG slice has no utilization to report, but its type
+  names its memory; a whole GPU's memory is shown without a total, which Slurm does not
+  know.
 
 Submitted jobs hold their allocation with `sleep infinity` until the time limit and
 write no output file (`--output=/dev/null`). An `srun` command opens an interactive

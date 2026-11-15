@@ -177,6 +177,19 @@ def parse_gres_gpus(gres):
     return gpus
 
 
+# The MIG profile that ends the type of a GPU slice, with its GB of GPU memory.
+MIG_PROFILE = re.compile(r"[_-]\d+g\.(\d+)gb$")
+
+
+def mig_memory(gpu):
+    """GB of GPU memory in a MIG slice (`nvidia_b200_3g.90gb` -> 90), else None.
+
+    A slice has its memory to itself, but NVML reports no utilization for it.
+    """
+    match = MIG_PROFILE.search(gpu)
+    return int(match.group(1)) if match else None
+
+
 def remove_untyped_gpu_rollup(gpu_counts):
     """Drop the untyped GPU total when per-model counts are available."""
     typed = {label: count for label, count in gpu_counts.items() if label != "gpu"}
@@ -394,6 +407,111 @@ def parse_sacct_states(output):
         if len(fields) == 3 and fields[0] and fields[1].strip():
             states[fields[0]] = (fields[1].split()[0], fields[2])
     return states
+
+
+# --- Job usage -----------------------------------------------------------------
+
+# Bytes in the units Slurm writes amounts of memory with; a bare number is bytes.
+SIZE_UNITS = {"": 1, "K": 2**10, "M": 2**20, "G": 2**30, "T": 2**40, "P": 2**50}
+SIZE = re.compile(r"(\d+(?:\.\d+)?)([KMGTP]?)")
+
+# The cluster's clock, to time usage samples free of ssh's delays.
+CLOCK_COMMAND = ["date", "+%s.%N"]
+
+
+def parse_size(text):
+    """A TRES amount of memory (`3102308K`, `22432M`, `128G`, or bytes) in MB.
+
+    None when `text` is not one.
+    """
+    match = SIZE.fullmatch(text.strip().upper())
+    if not match:
+        return None
+    return float(match.group(1)) * SIZE_UNITS[match.group(2)] / 2**20
+
+
+def split_tres(tres_str):
+    """A TRES list (`cpu=00:02:05,mem=3102308K,gres/gpuutil=0`) as {name: text}."""
+    values = {}
+    for item in tres_str.split(","):
+        # Names hold ':' (gres/gpu:h100) but '=' only before the value.
+        name, separator, value = item.strip().rpartition("=")
+        if separator and name:
+            values[name] = value
+    return values
+
+
+def usage_command(job_id):
+    """`sstat` for what every running step of a job has used.
+
+    `-a` includes the batch and extern steps. `TRESUsageInTot` sums a step's
+    tasks: CPU time so far, and memory and GPU use as of now, since sstat has
+    the node sample them afresh. `TRESUsageInMax` is the largest task's peak.
+    It asks the node's step daemons, so it starts nothing in the job.
+    """
+    fields = "JobID,TRESUsageInTot,TRESUsageInMax"
+    return ["sstat", "-a", "-n", "-P", "-j", str(job_id), "-o", fields]
+
+
+def _percent(text):
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def parse_usage(output):
+    """Sum `usage_command`'s steps into one reading; None when none reports.
+
+    `steps` is each step's CPU seconds so far, `mem` the MB their tasks hold
+    now and `mem_peak` the largest task's peak. `gpu_util` (percent of a GPU,
+    summed over GPUs) and `gpu_mem` (MB) are None where the site does not
+    gather them, which leaves the fields out. The extern step reports no CPU
+    time and is skipped; sstat prints nothing for a job that is not running.
+    """
+    steps = {}
+    reading = {"mem": 0.0, "mem_peak": 0.0, "gpu_util": None, "gpu_mem": None}
+    for line in output.splitlines():
+        fields = line.split("|")
+        if len(fields) != 3:
+            continue
+        now, peak = split_tres(fields[1]), split_tres(fields[2])
+        cpu = parse_seconds(now.get("cpu", ""))
+        if cpu is None:
+            continue
+        steps[fields[0]] = float(cpu)
+        reading["mem"] += parse_size(now.get("mem", "")) or 0.0
+        task_peak = parse_size(peak.get("mem", "")) or 0.0
+        reading["mem_peak"] = max(reading["mem_peak"], task_peak)
+        for key, name, read in (
+            ("gpu_util", "gres/gpuutil", _percent),
+            ("gpu_mem", "gres/gpumem", parse_size),
+        ):
+            value = read(now[name]) if name in now else None
+            if value is not None:
+                reading[key] = (reading[key] or 0.0) + value
+    return {"steps": steps, **reading} if steps else None
+
+
+def allocation_command(job_id):
+    """`squeue` for the resources a job holds (`tres-alloc`)."""
+    return ["squeue", "-h", "-j", str(job_id), "-O", "tres-alloc:|"]
+
+
+def parse_allocation(output):
+    """A job's CPUs, memory (MB) and GPUs by type, from `allocation_command`.
+
+    None when squeue no longer lists the job.
+    """
+    tres = output.strip().splitlines()[0].split("|")[0] if output.strip() else ""
+    values = split_tres(tres)
+    if not values.get("cpu", "").isdigit():
+        return None
+    return {
+        "cpus": int(values["cpu"]),
+        "mem": parse_size(values.get("mem", "")),
+        "gpus": remove_untyped_gpu_rollup(parse_tres_gpus(tres)),
+    }
 
 
 # --- Accounting ----------------------------------------------------------------
