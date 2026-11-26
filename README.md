@@ -14,7 +14,8 @@ any cluster you can reach over ssh.
   only) is test-submitted at every partition time limit with `sbatch --test-only`, so
   you see when 1 GPU for 3 hours would start next to 8 GPUs for a week.
 - **Partitions and hardware.** Load, free GPUs and CPUs, idle nodes and pending jobs per
-  partition or per kind of node, and which partitions your accounts may use.
+  partition, per GPU type where a partition mixes several, or per kind of node, and
+  which partitions your accounts may use.
 - **Your limits.** Every account/QOS pair you can use, with its job, GPU and wall-time
   caps and your fair share, read from Slurm even where `sacctmgr` does not work.
 - **Your jobs.** Running and pending jobs, with expected start times and planned nodes,
@@ -22,7 +23,8 @@ any cluster you can reach over ssh.
 - **One click to act.** Submit any estimate's `sbatch` command, copy any command, or
   release a job, each after you confirm.
 - **Several clusters in one window.** A tab per cluster over ssh, from a login node or
-  from your laptop. sqtop reuses your ssh connections and never asks for a password.
+  from your laptop, each marked `✓` or `✗` for whether it can be reached right now.
+  sqtop reuses your ssh connections and never asks for a password.
 - **Hourly email** of the whole report while the dashboard runs.
 
 Everything is read from Slurm, so it works on any cluster; the few site rules Slurm
@@ -50,7 +52,7 @@ shared login node: nothing is submitted or cancelled until you confirm it in a d
 ## Remote clusters
 
 Every cluster with an `ssh` host in your config gets a tab. sqtop runs Slurm on its
-login node through `ssh` with your `~/.ssh/config` (aliases, users, keys), contacts it
+login node through `ssh` with your `~/.ssh/config` (aliases, users, keys), reads it
 only once you open its tab, and refreshes only the visible tab. Commands there get your
 login shell's Slurm setup (`PATH`, and `SLURM_CONF` where a module sets it) and run from
 your `$SCRATCH`, since some clusters refuse jobs submitted from `/home`.
@@ -67,10 +69,22 @@ Host *.alliancecan.ca
     ControlPersist 4h
 ```
 
-The connection then stays open for 4 hours after your last session there closes. With
-keys that log in without a prompt, nothing is needed: sqtop opens its own shared
-connection, which closes 10 minutes after its last use. A tab that cannot connect shows
-ssh's error and how to connect; log in, then click `Refresh`.
+The connection then stays open for 4 hours after its last use. With keys that log in
+without a prompt, nothing is needed: sqtop opens its own shared connection, which closes
+10 minutes after its last use. A tab that cannot connect shows ssh's error and how to
+connect; log in, and the tab loads within a minute, or at once when you click `Refresh`.
+
+Each tab says after the cluster's name whether sqtop can reach it: `fir ✓` or
+`narval ✗`. Every cluster, on screen or not, is asked at startup, once a minute and on
+`Refresh`, with a command that does nothing (`true`) over the shared connection:
+
+- The checks count as use, so a shared connection does not close for being idle while
+  sqtop runs, however short its `ControlPersist`.
+- A cluster that refused a login is not asked to log in again, since a site counts each
+  refusal as a failed login and shuts out an address that makes many. Its `✗` stays
+  until you log in with `ssh` in another terminal, or open its tab, which always tries.
+- A cluster that could not be reached at all (no network, a login node that is down) is
+  tried again every minute.
 
 Commands for a remote cluster are shown with its host as the prompt
 (`fir.alliancecan.ca$ sbatch ...`): run them there. The text report covers the cluster
@@ -112,6 +126,23 @@ The bottom bar also shows which version of sqtop is running.
   CPU-only partitions) in use: `█` allocated, `▒` unavailable (down, drained, reserved),
   `░` free. `Free` is free/total per GPU type, `Idle` counts wholly idle nodes, `Pend`
   counts everyone's pending jobs, and `Max` is the time limit.
+- **GPU types of a partition.** A partition whose nodes carry several GPU types, such
+  as whole GPUs on some nodes and MIG slices on others, lists each type on a row of its
+  own below it, indented:
+
+  ```
+  gpubase_bygpu_b5                   yes  48  1125G  h100:4 / 16 GPUs (3 types)  ██████░░  80%  61/360 GPUs (4 types)  0/30  57  7-00:00:00
+    ├ h100                                48  1125G  4                           █████▒▒░  62%  3/40                   0/10  56
+    ├ nvidia_h100_80gb_hbm3_1g.10gb       48  1125G  8                           █████░░░  67%  53/160                 0/20  0
+    ├ nvidia_h100_80gb_hbm3_2g.20gb       48  1125G  4                           ████████ 100%  0/80                   0/20  1
+    └ nvidia_h100_80gb_hbm3_3g.40gb       48  1125G  4                           ████████  94%  5/80                   0/20  0
+  ```
+
+  A type's row describes the nodes that carry it: their CPUs and memory, how many GPUs
+  of the type each has, the type's load and free/total, how many of those nodes are
+  idle, and the partition's pending jobs that ask for that type. A job asking for a GPU
+  of no particular type counts only on the partition's row. Click a type for its
+  details.
 - **Hardware**, in place of Partitions on a cluster with a single node. Its partitions
   all share that node, so Slurm reports the same hardware for each; the table has one
   row per resource instead: CPUs, memory, then each GPU type. `Load` and `Free` are as

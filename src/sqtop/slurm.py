@@ -380,6 +380,26 @@ def parse_pending_gpus(output):
     return counts
 
 
+def parse_pending_partition_gpus(output):
+    """Count each partition's pending jobs by the GPU type they ask for.
+
+    `parse_pending_gpus` within every partition a job names: {partition:
+    {type: jobs}}, with None for the jobs asking for no GPU.
+    """
+    counts = {}
+    for line in output.splitlines():
+        fields = line.split("|")
+        if len(fields) < 2:
+            continue
+        gpus = remove_untyped_gpu_rollup(parse_tres_gpus(fields[1])) or [None]
+        for partition in fields[0].split(","):
+            if partition.strip():
+                asked = counts.setdefault(partition.strip(), {})
+                for gpu in gpus:
+                    asked[gpu] = asked.get(gpu, 0) + 1
+    return counts
+
+
 def job_counts(jobs, qos=None):
     """Running/pending/total counts of `jobs`, optionally within one QOS."""
     states = [job["state"] for job in jobs if qos is None or job["qos"] == qos]

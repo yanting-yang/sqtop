@@ -35,21 +35,39 @@ def print_table(columns, rows, out=None):
 
 
 def print_partitions(snap, out=None):
-    rows = [
-        (
-            summary["name"] + ("*" if summary["default"] else ""),
-            "yes" if summary["usable"] else f"no ({summary['access_note']})",
-            views.node_cpus(summary),
-            views.node_mem(summary),
-            views.node_gpus(summary),
-            f"{views.load_percent(summary)}%",
-            views.free_resources(summary),
-            views.idle_nodes(summary),
-            "?" if summary["pending"] is None else summary["pending"],
-            views.max_time(summary),
+    rows = []
+    for summary in snap.partitions:
+        rows.append(
+            (
+                summary["name"] + ("*" if summary["default"] else ""),
+                "yes" if summary["usable"] else f"no ({summary['access_note']})",
+                views.node_cpus(summary),
+                views.node_mem(summary),
+                views.node_gpus(summary),
+                f"{views.load_percent(summary)}%",
+                views.free_resources(summary),
+                views.idle_nodes(summary),
+                "?" if summary["pending"] is None else summary["pending"],
+                views.max_time(summary),
+            )
         )
-        for summary in snap.partitions
-    ]
+        # Its GPU types, where its nodes carry several, indented below it.
+        types = summary["gpu_types"]
+        for index, row in enumerate(types):
+            rows.append(
+                (
+                    views.gpu_type_label(row, index == len(types) - 1),
+                    "",
+                    views.node_cpus(row),
+                    views.node_mem(row),
+                    views.gpu_type_per_node(row),
+                    f"{views.load_percent(row)}%",
+                    views.gpu_type_free(row),
+                    views.idle_nodes(row),
+                    "?" if row["pending"] is None else row["pending"],
+                    "",
+                )
+            )
     print("Partitions (* default):", file=out)
     if not rows:
         print("none reported\n", file=out)

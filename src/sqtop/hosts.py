@@ -8,9 +8,11 @@ probe grid through another. Sessions reuse an ssh control master.
 Every command runs without the terminal and never prompts: sqtop does not
 log in for the user. A cluster that needs a password or MFA is reached through
 a control master the user opened with `ssh` in a terminal of their own.
+`check` says whether a host can be reached at all, for the mark on its tab.
 """
 
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -31,6 +33,11 @@ CONTROL_PERSIST = "10m"
 # run, since some sites refuse jobs submitted from /home (Killarney).
 LOGIN_ENV = ("PATH", "SLURM_CONF")
 LOGIN_WORKDIR = "SCRATCH"
+# A check gives up after this long: a control master whose connection died
+# without a word does not answer at all.
+CHECK_TIMEOUT = 20
+# ssh's words for a login the server refused, unlike a network failure.
+REFUSED = re.compile(r"permission denied|authentication", re.IGNORECASE)
 
 
 class ConnectionLost(Exception):
@@ -72,6 +79,9 @@ class Local:
     """Run commands on this machine."""
 
     ssh = None
+
+    def check(self):
+        """Why this machine cannot be reached: never, so None (`Remote.check`)."""
 
     def run(self, args, timeout=60):
         """Return stdout, or None when the command is missing, fails or hangs."""
@@ -148,6 +158,8 @@ class Remote:
         self.env = {}
         self.workdir = None
         self._control = None
+        # ssh's message when the server refused the last login (`_failure`).
+        self.refused = None
 
     def control_options(self):
         """Reuse a control master: the user's own if configured, else ours."""
@@ -170,6 +182,38 @@ class Remote:
         options = [*self.control_options(), "-T", "-o", "ConnectTimeout=15"]
         options += ["-o", "BatchMode=yes", "-o", "LogLevel=ERROR"]
         return ["ssh", *options, self.ssh, shlex.join(["sh", "-c", script])]
+
+    def _failure(self, code, stderr):
+        """ssh's words for a session that failed, remembering a refused login."""
+        reason = stderr.strip() or f"ssh exited with status {code}"
+        if REFUSED.search(reason):
+            self.refused = reason
+        return reason
+
+    def master_open(self):
+        """Whether a control master to the cluster is open; asks no server."""
+        check = ["ssh", *self.control_options(), "-O", "check", self.ssh]
+        return _run(check, 10)[0] == 0
+
+    def check(self):
+        """Why the cluster cannot be reached now (ssh's words), or None when it can.
+
+        Runs `true` there, through the control master when one is open.
+        Without one this logs in, as any command does, which only keys can
+        do. So once a login was refused, to a check or to anything else (a
+        cluster that wants a password or MFA), checks wait for a master
+        rather than ask again, until one reaches the cluster: sshd counts
+        each refusal as a failed login and shuts out an address that makes
+        many ("Not allowed at this time"). A network failure is no login
+        and is tried again.
+        """
+        if self.refused and not self.master_open():
+            return self.refused
+        code, _, stderr = _run(self.ssh_command("true"), CHECK_TIMEOUT)
+        if code == 0:
+            self.refused = None
+            return None
+        return self._failure(code, stderr)
 
     def _prelude(self, login_path=False):
         if login_path:
@@ -194,7 +238,7 @@ class Remote:
         code, stdout, stderr = _run(self.ssh_command(script), timeout)
         output, record, status = stdout.rpartition(RECORD)
         if not record:
-            raise ConnectionLost(stderr.strip() or f"ssh exited with status {code}")
+            raise ConnectionLost(self._failure(code, stderr))
         return int(status), output.strip()
 
     def run_batch(self, commands, timeout=120, login_path=False):
@@ -222,7 +266,7 @@ class Remote:
         ]
         code, stdout, stderr = _run(self.ssh_command("\n".join(lines)), timeout)
         if RECORD not in stdout:
-            raise ConnectionLost(stderr.strip() or f"ssh exited with status {code}")
+            raise ConnectionLost(self._failure(code, stderr))
         outputs = [None] * len(commands)
         for record in stdout.split(RECORD)[1:]:
             header, _, output = record.partition("\n")
@@ -297,5 +341,4 @@ class Remote:
             process.wait()
         if received:
             return received, None
-        error = process.stderr.read().strip()
-        return 0, error or f"ssh exited with status {process.returncode}"
+        return 0, self._failure(process.returncode, process.stderr.read())

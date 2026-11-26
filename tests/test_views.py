@@ -71,6 +71,46 @@ class ResourceTests(unittest.TestCase):
         )
 
 
+class GpuTypeTests(unittest.TestCase):
+    """The rows of a partition's GPU types, below its own."""
+
+    def test_describes_each_gpu_type_of_a_partition(self):
+        p = summary(
+            node("a", cfg_gpus={"h100": 4}, alloc_gpus={"h100": 1}),
+            node("b", cpu_efctv=48, cfg_gpus={"h100": 2, "t4": 8}, alloc_gpus={}),
+        )
+        h100, t4 = p["gpu_types"]
+
+        # Indented under the partition; the last closes the list.
+        self.assertEqual(views.gpu_type_label(h100, False), "  ├ h100")
+        self.assertEqual(views.gpu_type_label(t4, True), "  └ t4")
+        # The type is the row's label, so its cells are bare numbers.
+        self.assertEqual(views.gpu_type_per_node(h100), "2/4")
+        self.assertEqual(views.gpu_type_per_node(t4), "8")
+        self.assertEqual(views.gpu_type_free(h100), "5/6")
+        self.assertEqual(views.gpu_type_free(t4), "8/8")
+        # The partition's cells describe the nodes carrying the type.
+        self.assertEqual(views.node_cpus(h100), "48/60")
+        self.assertEqual(views.node_cpus(t4), "48")
+        self.assertEqual(views.node_mem(t4), "512G")
+        self.assertEqual(views.idle_nodes(h100), "0/2")
+        self.assertEqual(views.main_resource(h100), (1, 5, 6))
+        self.assertEqual(views.load_percent(t4), 0)
+
+    def test_narrows_a_partition_to_one_gpu_type_for_its_details(self):
+        p = summary(node("a"), node("b", cfg_gpus={"t4": 8}, alloc_gpus={}))
+
+        narrowed = views.gpu_type_summary(p, p["gpu_types"][1])
+
+        self.assertEqual(narrowed["name"], "gpu › t4")
+        self.assertEqual(narrowed["gpu_type"], "t4")
+        self.assertEqual((narrowed["node_count"], p["node_count"]), (1, 2))
+        self.assertEqual(list(narrowed["gpus"]), ["t4"])
+        # What belongs to the partition stays.
+        self.assertEqual(narrowed["max_time"], p["max_time"])
+        self.assertTrue(narrowed["usable"])
+
+
 class PerNodeTests(unittest.TestCase):
     def test_shows_a_uniform_partition_once(self):
         p = summary(node("a"), node("b"))

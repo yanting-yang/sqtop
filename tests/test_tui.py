@@ -121,6 +121,10 @@ class TuiTestCase(unittest.IsolatedAsyncioTestCase):
         """Click a cluster's tab."""
         await pilot.click(f"#--content-tab-cluster-{index}")
 
+    def tab_text(self, index):
+        """What the tab of the `index`th cluster says."""
+        return self.app.tabs.get_tab(self.app.views[index].pane_id).label.plain
+
     async def click_detail(self, pilot, text, nth=0):
         """Click the `nth` place the Details panel shows `text`."""
         width = self.view.detail.content_size.width
@@ -741,6 +745,53 @@ class DashboardTests(TuiTestCase):
             # The panel takes no focus: the table it follows keeps it.
             self.assertTrue(self.table("scopes").has_focus)
 
+    async def test_lists_each_gpu_type_of_a_partition_below_it(self):
+        # Like Fir's gpubase_bygpu partitions: whole GPUs and MIG slices.
+        nodes = [
+            node("a", cfg_gpus={"h100": 4}, alloc_gpus={"h100": 1}),
+            node("b", cfg_gpus={"h100_1g": 8, "h100_2g": 4}, alloc_gpus={"h100_1g": 8}),
+        ]
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.settle(pilot)
+            self.view.collector.snap = make_snapshot(
+                nodes=nodes, pending_gpus={"gpu": {"h100": 5}}
+            )
+            await self.click_action(pilot, "Refresh")
+            await self.settle(pilot)
+
+            partitions = self.table("partitions")
+            rows = [
+                [str(cell) for cell in partitions.get_row_at(index)]
+                for index in range(partitions.row_count)
+            ]
+            self.assertEqual(
+                [row[0] for row in rows],
+                ["gpu*", "  ├ h100", "  ├ h100_1g", "  └ h100_2g", "long"],
+            )
+            # The partition's own row is as before; a type's row has the
+            # nodes carrying it, its GPUs per node, free GPUs and pending jobs.
+            self.assertEqual(rows[0][6], "7/16 GPUs (3 types)")
+            self.assertEqual(
+                rows[1][1:5] + rows[1][6:],
+                ["", "60", "512G", "4", "3/4", "0/1", "5", ""],
+            )
+            self.assertEqual(rows[1][5], "██░░░░░░  25%")
+            self.assertEqual(rows[2][4:7], ["8", "████████ 100%", "0/8"])
+
+            # Its details are the partition's, narrowed to those nodes.
+            await self.click_row(pilot, "partitions", 1)
+            self.assertIn("gpu › h100  UP  usable", self.detail())
+            self.assertIn(
+                "Nodes 1 (1 mixed) · pending jobs asking for it: 5", self.detail()
+            )
+            self.assertIn("1 node: 60 CPUs / 512 GB / h100:4", self.detail())
+            self.assertNotIn("h100_1g", self.detail())
+            # The rows above and below it are still their partitions.
+            await self.click_row(pilot, "partitions", 0)
+            self.assertIn("Nodes 2 (2 mixed) · pending jobs 12", self.detail())
+            await self.click_row(pilot, "partitions", 4)
+            self.assertTrue(self.detail().startswith("long  UP  usable"))
+
     async def test_shows_a_single_node_by_resource_in_place_of_its_partitions(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
             await self.settle(pilot)
@@ -950,8 +1001,8 @@ class ClusterTabTests(TuiTestCase):
             fir = self.app.views[1]
             self.assertEqual(self.contacted, [None])
             self.assertIsNone(fir.snap)
-            self.assertEqual(str(fir.status.content), "not checked yet")
-            self.assertIn("checked over ssh (fir.example.org)", str(fir.detail.content))
+            self.assertEqual(str(fir.status.content), "not loaded yet")
+            self.assertIn("read over ssh (fir.example.org)", str(fir.detail.content))
 
             self.app.refresh_visible()
             await self.settle(pilot)
@@ -983,6 +1034,107 @@ class ClusterTabTests(TuiTestCase):
             await self.settle(pilot)
             self.assertIsNone(self.view.error)
             self.assertEqual(self.table("partitions").row_count, 2)
+
+
+class AccessTests(TuiTestCase):
+    """The mark after each cluster's name on its tab."""
+
+    async def test_marks_each_tab_with_whether_its_cluster_can_be_reached(self):
+        self.fir.lost = "Permission denied (keyboard-interactive)."
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.settle(pilot)
+
+            self.assertEqual(self.tab_text(0), "here ✓")
+            self.assertEqual(self.tab_text(1), "fir ✗")
+            styles = [str(view.tab_label().spans[0].style) for view in self.app.views]
+            self.assertEqual(styles, ["green", "red"])
+            # The hidden tab was only asked; nothing was fetched from it. The
+            # visible one was collecting, which says as much as a check.
+            fir = self.app.views[1]
+            self.assertEqual((self.here.checks, self.fir.checks), (0, 1))
+            self.assertEqual(self.contacted, [None])
+            self.assertIsNone(fir.snap)
+
+            # Opening it shows why, and going back leaves it disconnected.
+            await self.open_tab(pilot, 1)
+            await self.settle(pilot)
+            self.assertIn("Permission denied", self.detail())
+            await self.open_tab(pilot, 0)
+            await self.settle(pilot)
+
+            # Each check asks again, as the timer and Refresh do. A hidden tab
+            # gets its mark and nothing else.
+            self.fir.lost = None
+            self.app.check_access()
+            await self.settle(pilot)
+            self.assertEqual(self.tab_text(1), "fir ✓")
+            self.assertIsNotNone(fir.error)
+            checks = self.fir.checks
+            await self.click_action(pilot, "Refresh")
+            await self.settle(pilot)
+            self.assertEqual(self.fir.checks, checks + 1)
+
+            await self.open_tab(pilot, 1)
+            await self.settle(pilot)
+            self.assertIsNone(fir.error)
+            self.assertEqual(self.tab_text(1), "fir ✓")
+
+    async def test_leaves_a_tab_that_lost_its_connection_to_the_check(self):
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.settle(pilot)
+            await self.open_tab(pilot, 1)
+            await self.settle(pilot)
+            self.assertEqual(self.tab_text(1), "fir ✓")
+
+            # The refresh that finds the connection gone marks the tab.
+            self.fir.lost = "Connection timed out"
+            self.app.refresh_visible()
+            await self.settle(pilot)
+            self.assertEqual(self.tab_text(1), "fir ✗")
+            self.assertIn("not connected", str(self.view.status.content))
+
+            # Refreshes then stop asking, each of which could be a new login.
+            self.app.refresh_visible()
+            self.assertFalse(self.view.collecting)
+            self.app.check_access()
+            await self.settle(pilot)
+            self.assertEqual(self.tab_text(1), "fir ✗")
+            self.assertIsNotNone(self.view.error)
+
+            # Once the cluster answers a check, the tab on screen reconnects.
+            self.fir.lost = None
+            self.app.check_access()
+            await self.settle(pilot)
+            await self.settle(pilot)
+            self.assertEqual(self.tab_text(1), "fir ✓")
+            self.assertIsNone(self.view.error)
+            self.assertIn("updated", str(self.view.status.content))
+
+    async def test_ignores_an_answer_for_a_tab_that_was_closed(self):
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.settle(pilot)
+            fir = self.app.views[1]
+            self.app.remove_view(fir)
+            await pilot.pause()
+
+            fir.access_checked("Connection timed out")
+
+            self.assertTrue(fir.reachable)
+            self.assertEqual(self.tab_text(0), "here ✓")
+
+    async def test_does_not_check_a_cluster_it_is_fetching_from(self):
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.settle(pilot)
+            self.app.check_access()
+            await self.settle(pilot)
+            self.assertEqual(self.here.checks, 1)
+
+            for busy in ("collecting", "probing", "checking"):
+                setattr(self.view, busy, True)
+                self.app.check_access()
+                setattr(self.view, busy, False)
+            await self.settle(pilot)
+            self.assertEqual(self.here.checks, 1)
 
 
 class SubmitTests(TuiTestCase):
@@ -1353,8 +1505,11 @@ class ConfigTests(TuiTestCase):
                 ["cluster-0", "cluster-2"],
             )
             self.assertEqual(self.view.cluster.name, "here")
-            # The new cluster is contacted when its tab is opened, like any other.
+            # The new cluster is read when its tab is opened, like any other;
+            # until then it is only asked whether it can be reached.
             self.assertEqual(self.contacted, [None])
+            self.assertEqual(self.tab_text(1), "x ✓")
+            self.assertEqual(self.app.views[1].host.checks, 1)
             await self.open_tab(pilot, 2)
             await self.settle(pilot)
 

@@ -14,7 +14,7 @@ from test_snapshot import ASSOC_MGR, node, partition
 NOW = datetime.datetime(2026, 10, 7, 12, 0)
 
 
-def make_snapshot(jobs=(), nodes=None):
+def make_snapshot(jobs=(), nodes=None, pending_gpus=None):
     """Two nodes in the `gpu` partition, unless `nodes` says otherwise."""
     nodes = nodes or [node("a"), node("b", state="IDLE+DRAIN")]
     scopes = [
@@ -30,6 +30,7 @@ def make_snapshot(jobs=(), nodes=None):
             {"gpu": 12},
             scopes,
             None,
+            pending_gpus,
         ),
         hardware=snapshot.summarize_hardware(nodes),
         scopes=scopes,
@@ -152,6 +153,27 @@ class ReportTests(unittest.TestCase):
             r"gpu\*\s+\| yes\s+\| 60\s+\| 512G\s+\| l40s:4\s+\| \d+%\s+\| 3/8 l40s"
             r"\s+\| 0/2\s+\| 12\s+\| 0-03:00:00",
         )
+
+    def test_lists_each_gpu_type_of_a_partition_below_it(self):
+        nodes = [
+            node("a", cfg_gpus={"h100": 4}, alloc_gpus={"h100": 1}),
+            node("b", cfg_gpus={"h100_1g": 8, "h100_2g": 4}, alloc_gpus={"h100_1g": 8}),
+        ]
+        text = self.render(
+            make_snapshot(nodes=nodes, pending_gpus={"gpu": {"h100": 5}})
+        )
+
+        self.assertRegex(text, r"\ngpu\*\s+\| yes .*\| 7/16 GPUs \(3 types\)\s+\|")
+        # Indented, with its own nodes, load, free GPUs and pending jobs.
+        self.assertRegex(
+            text,
+            r"\n  ├ h100\s+\|\s+\| 60\s+\| 512G\s+\| 4\s+\| 25%\s+\| 3/4\s+"
+            r"\| 0/1\s+\| 5\s+\|\s*\n",
+        )
+        self.assertRegex(text, r"\n  ├ h100_1g\s+\|\s+\| 60.*\| 8\s+\| 100%\s+\| 0/8")
+        self.assertRegex(text, r"\n  └ h100_2g\s+\|\s+\| 60.*\| 4\s+\| 0%\s+\| 4/4")
+        # The next partition follows the last type.
+        self.assertRegex(text, r"└ h100_2g[^\n]*\nlong\s+\| yes")
 
     def test_prints_the_estimate_grid_with_reasons_and_skipped_cells(self):
         text = self.render(make_snapshot())

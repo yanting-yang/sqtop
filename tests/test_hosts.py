@@ -203,6 +203,81 @@ class RemoteTests(unittest.TestCase):
         with self.assertRaisesRegex(hosts.ConnectionLost, "Connection closed"):
             remote.act(["sbatch"])
 
+    @patch.object(hosts.subprocess, "run")
+    def test_checks_by_running_true_without_prompts(self, run):
+        run.return_value = completed()
+        remote = self.remote()
+
+        self.assertIsNone(remote.check())
+        command = run.call_args.args[0]
+        self.assertIn("BatchMode=yes", command)
+        self.assertEqual(shlex.split(command[-1]), ["sh", "-c", "true"])
+        self.assertEqual(run.call_args.kwargs["timeout"], hosts.CHECK_TIMEOUT)
+        # This machine is always in reach.
+        self.assertIsNone(hosts.Local().check())
+
+    def test_checks_again_after_a_network_failure(self):
+        remote = self.remote()
+        down = completed(
+            stderr="ssh: connect to host fir port 22: Operation timed out\n",
+            returncode=255,
+        )
+        with patch.object(hosts.subprocess, "run", return_value=down) as run:
+            reasons = [remote.check(), remote.check()]
+
+        self.assertEqual(
+            reasons, ["ssh: connect to host fir port 22: Operation timed out"] * 2
+        )
+        # Neither reached a login, so both tried to connect.
+        scripts = [shlex.split(call.args[0][-1]) for call in run.call_args_list]
+        self.assertEqual(scripts, [["sh", "-c", "true"]] * 2)
+
+    def test_gives_up_on_a_master_that_does_not_answer(self):
+        remote = self.remote()
+        hung = subprocess.TimeoutExpired("ssh", hosts.CHECK_TIMEOUT)
+        with patch.object(hosts.subprocess, "run", side_effect=hung):
+            self.assertEqual(remote.check(), f"Timed out after {hosts.CHECK_TIMEOUT}s")
+
+    def test_waits_for_a_master_once_a_login_was_refused(self):
+        remote = self.remote()
+        denied = "me@fir: Permission denied (publickey,keyboard-interactive)."
+        replies = {
+            "login": completed(stderr=denied, returncode=255),
+            "master": completed(stderr="Control socket connect", returncode=255),
+        }
+        ran = []
+
+        def run(args, **kwargs):
+            ran.append("master" if "-O" in args else "login")
+            if ran[-1] == "master":
+                self.assertEqual(args[-3:], ["-O", "check", "fir"])
+            return replies[ran[-1]]
+
+        with patch.object(hosts.subprocess, "run", side_effect=run):
+            self.assertEqual(remote.check(), denied)
+            # No second login, which the site would count as a failed one.
+            self.assertEqual(remote.check(), denied)
+            self.assertEqual(ran, ["login", "master"])
+
+            # The user logged in from a terminal: the master answers.
+            replies["master"] = completed("Master running (pid=1)")
+            replies["login"] = completed()
+            self.assertIsNone(remote.check())
+            self.assertIsNone(remote.check())
+            self.assertEqual(ran, ["login", "master", "master", "login", "login"])
+
+    def test_waits_for_a_master_after_any_refused_login(self):
+        remote = self.remote()
+        denied = completed(stderr="Permission denied (publickey).", returncode=255)
+        with patch.object(hosts.subprocess, "run", return_value=denied) as run:
+            # A refresh found out; the check that follows does not log in.
+            with self.assertRaises(hosts.ConnectionLost):
+                remote.run_batch([["scontrol", "show", "node"]])
+            self.assertEqual(remote.check(), "Permission denied (publickey).")
+
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args.args[0][-3:], ["-O", "check", "fir"])
+
     def popen(self, stdout, returncode=0, stderr=""):
         process = Mock(returncode=returncode)
         # Like a pipe, and unlike str.splitlines, StringIO splits only on newlines.

@@ -1,10 +1,12 @@
 """Interactive dashboard: partitions, account/QOS limits, start estimates, jobs.
 
-Each cluster gets a tab holding a `ClusterView`. A cluster is contacted only
-while its tab is shown: at startup that is the local one, and a remote cluster
-is first reached over ssh (see `hosts`) when its tab is opened. The visible
-view collects data on a background thread every `REFRESH_SECONDS`, and probes
-run on their own worker, filling the estimates grid as replies arrive.
+Each cluster gets a tab holding a `ClusterView`. A cluster's data is fetched
+only while its tab is shown: at startup that is the local one, and a remote
+cluster is first read over ssh (see `hosts`) when its tab is opened. The
+visible view collects data on a background thread every `REFRESH_SECONDS`, and
+probes run on their own worker, filling the estimates grid as replies arrive.
+Every cluster, shown or not, is asked every `ACCESS_SECONDS` whether it can
+be reached (`hosts.Remote.check`), and its tab says so after its name.
 
 Everything is a click; sqtop binds no keys. The action bar at the bottom
 refreshes, re-probes, edits the request, turns the hourly email (`mailer`) of
@@ -69,6 +71,10 @@ USAGE_SECONDS = 10
 USAGE_SOON_SECONDS = 3
 # In place of a usage sample that ssh could not fetch.
 UNREACHED = object()
+# Every cluster is asked this often whether it can be reached.
+ACCESS_SECONDS = 60
+# After a cluster's name on its tab, once it is known whether it can be.
+ACCESS_MARKS = {True: ("✓", "green"), False: ("✗", "red")}
 # Below this width the 2x2 grid cannot fit D-HH:MM:SS columns, so panels stack.
 NARROW_WIDTH = 135
 
@@ -525,6 +531,11 @@ class ClusterView(Vertical):
         # here rather than read from the worker, which is still winding down
         # when its outcome arrives, so a refresh asked for then is not dropped.
         self.collecting = False
+        # Whether the cluster can be reached, as its tab says: None until the
+        # first check (`check_access`) or collection ends, whichever is first.
+        self.reachable = None
+        # True while a check is running.
+        self.checking = False
 
     # --- Layout --------------------------------------------------------------
 
@@ -604,10 +615,10 @@ class ClusterView(Vertical):
         )
         # Nothing is fetched until the tab is opened (`activate`).
         if self.host.ssh:
-            self.status.update("not checked yet")
+            self.status.update("not loaded yet")
             self.detail.update(
                 Text(
-                    f"{self.cluster.name} is checked over ssh ({self.host.ssh}) "
+                    f"{self.cluster.name} is read over ssh ({self.host.ssh}) "
                     "when you open this tab.",
                     style="dim",
                 )
@@ -689,6 +700,7 @@ class ClusterView(Vertical):
         """Show why ssh failed; the last data, if any, stays on screen."""
         self.collecting = False
         self.error = message
+        self.set_reachable(False)
         self.loaded()
         self.update_status()
         self.show_detail()
@@ -698,6 +710,7 @@ class ClusterView(Vertical):
         self.collecting = False
         self.snap = snap
         self.error = None
+        self.set_reachable(True)
         self.fill_partitions()
         self.fill_hardware()
         self.fill_resources()
@@ -737,6 +750,51 @@ class ClusterView(Vertical):
         status.append_text(self.app.mail_status())
         self.status.update(status)
 
+    # --- Access --------------------------------------------------------------
+
+    def tab_label(self):
+        """The tab's text: the cluster's name, then whether it can be reached."""
+        label = Text(self.cluster.name)
+        if self.reachable is not None:
+            mark, style = ACCESS_MARKS[self.reachable]
+            label.append(f" {mark}", style)
+        return label
+
+    def set_reachable(self, reachable):
+        # An answer can land after its tab was closed (`SqtopApp.remove_view`).
+        if reachable != self.reachable and self in self.app.views:
+            self.reachable = reachable
+            self.app.tabs.get_tab(self.pane_id).label = self.tab_label()
+
+    def check_access(self):
+        """Ask in the background whether the cluster can be reached.
+
+        Not while the view collects or probes: what it is fetching says as
+        much, and its ssh sessions are better left to that.
+        """
+        if self.checking or self.collecting or self.probing:
+            return
+        self.checking = True
+        self.ask_access()
+
+    @work(thread=True, group="access", exit_on_error=False)
+    def ask_access(self):
+        worker = get_current_worker()
+        reason = "the check failed"
+        try:
+            reason = self.host.check()
+        finally:
+            if not worker.is_cancelled:
+                self.app.call_from_thread(self.access_checked, reason)
+
+    def access_checked(self, reason):
+        """A check ended: `reason` is why the cluster is out of reach, or None."""
+        self.checking = False
+        self.set_reachable(reason is None)
+        # Back in reach: the tab on screen reconnects without a click.
+        if reason is None and self.error is not None and self.app.view is self:
+            self.refresh_snapshot()
+
     # --- Tables --------------------------------------------------------------
 
     @staticmethod
@@ -751,6 +809,8 @@ class ClusterView(Vertical):
 
     def fill_partitions(self):
         rows = []
+        # What each row of the table describes, for its details.
+        self.partition_rows = []
         for summary in self.snap.partitions:
             usable = Text("yes", "green") if summary["usable"] else Text("no", "red")
             pending = summary["pending"]
@@ -771,6 +831,30 @@ class ClusterView(Vertical):
                     ),
                 )
             )
+            self.partition_rows.append(summary)
+            # Its GPU types, where its nodes carry several, each on a row
+            # of its own below it.
+            types = summary["gpu_types"]
+            for index, row in enumerate(types):
+                pending = row["pending"]
+                rows.append(
+                    (
+                        f"{summary['name']}/{row['name']}",
+                        (
+                            views.gpu_type_label(row, index == len(types) - 1),
+                            "",
+                            views.node_cpus(row),
+                            views.node_mem(row),
+                            views.gpu_type_per_node(row),
+                            load_bar(*views.main_resource(row)),
+                            views.gpu_type_free(row),
+                            views.idle_nodes(row),
+                            "?" if pending is None else str(pending),
+                            "",
+                        ),
+                    )
+                )
+                self.partition_rows.append(views.gpu_type_summary(summary, row))
         self.refill(self.tables["partitions"], rows)
 
     def fill_hardware(self):
@@ -1068,7 +1152,7 @@ class ClusterView(Vertical):
             self.detail_box.scroll_home(animate=False, immediate=True)
             self.refresh_usage()
         if source == "partitions":
-            detail.update(self.partition_detail(self.snap.partitions[row]))
+            detail.update(self.partition_detail(self.partition_rows[row]))
         elif source == "hardware":
             detail.update(self.hardware_detail(self.snap.hardware[row]))
         elif source == "resources":
@@ -1089,7 +1173,9 @@ class ClusterView(Vertical):
             title,
             Text(self.error),
             Text(
-                f"{hosts.connect_hint(self.host.ssh)} Then click Refresh.", style="dim"
+                f"{hosts.connect_hint(self.host.ssh)} Then click Refresh, or "
+                "wait for the next check, within a minute.",
+                style="dim",
             ),
         )
 
@@ -1121,11 +1207,15 @@ class ClusterView(Vertical):
         if summary.get("preempt_mode", "OFF") != "OFF":
             header.append(f" · preemptible ({summary['preempt_mode']})", "yellow")
         pending = "?" if summary["pending"] is None else summary["pending"]
+        # A GPU type's row (`views.gpu_type_summary`) counts the jobs asking
+        # for that type.
+        asking = " asking for it:" if "gpu_type" in summary else ""
         lines = [
             header,
             Text(
                 f"Nodes {summary['node_count']} "
-                f"({views.state_counts(summary['states'])}) · pending jobs {pending}"
+                f"({views.state_counts(summary['states'])}) · "
+                f"pending jobs{asking} {pending}"
             ),
             Text(" · ".join(views.node_kinds(summary))),
             Text(
@@ -1731,9 +1821,12 @@ class SqtopApp(App):
         self.show_clusters()
         self.set_interval(REFRESH_SECONDS, self.refresh_visible)
         self.set_interval(USAGE_SECONDS, self.refresh_usage)
+        self.set_interval(ACCESS_SECONDS, self.check_access)
         self.set_interval(1, self.update_status)
         if self.views:
             self.view.activate()
+            # After the visible tab began to collect, which says as much.
+            self.check_access()
         else:
             self.action_edit_config()
 
@@ -1772,10 +1865,21 @@ class SqtopApp(App):
     def refresh_visible(self):
         """Only the visible cluster refreshes, probing when its estimates are old.
 
-        Hidden tabs are left alone; opening one refreshes it if needed.
+        Hidden tabs are left alone; opening one refreshes it if needed. So is
+        a tab that lost its connection: the access check (`check_access`)
+        refreshes it once its cluster answers again.
         """
-        if self.view is not None and self.view.snap is not None:
-            self.view.refresh_snapshot()
+        view = self.view
+        if view is not None and view.snap is not None and view.error is None:
+            view.refresh_snapshot()
+
+    def check_access(self):
+        """Ask every cluster, hidden tabs too, whether it can be reached.
+
+        Each marks its tab with the answer (`ClusterView.check_access`).
+        """
+        for view in self.views:
+            view.check_access()
 
     def refresh_usage(self):
         """The usage of the running job the visible tab's details show."""
@@ -1823,6 +1927,7 @@ class SqtopApp(App):
 
     def action_refresh(self):
         self.view.action_refresh()
+        self.check_access()
 
     def action_probe(self):
         self.view.action_probe()
@@ -2017,7 +2122,10 @@ class SqtopApp(App):
         self.notify(note, title="Config", timeout=10)
 
     def add_cluster(self, profile):
-        """Open a tab for a cluster added to the config; it connects when opened."""
+        """Open a tab for a cluster added to the config; it connects when opened.
+
+        Until then it is only asked whether it can be reached, for its mark.
+        """
         cluster = snapshot.Cluster(profile.name, profile, hosts.Remote(profile.ssh))
         pane_id = f"cluster-{self.pane_count}"
         self.pane_count += 1
@@ -2027,6 +2135,8 @@ class SqtopApp(App):
         if len(self.views) == 1:  # the first tab, which opens as it is added
             self.show_clusters()
         self.tabs.add_pane(TabPane(cluster.name, view, id=pane_id))
+        if view is not self.view:  # the first tab opens, and so collects
+            view.check_access()
 
     def remove_view(self, view):
         """Close a cluster's tab, showing the first tab if it was the visible one.

@@ -515,7 +515,45 @@ def partition_access(partition, accounts, qos_names, groups):
     return True, ""
 
 
-def summarize_partitions(partitions, nodes, pending, scopes, groups):
+def summarize_gpu_types(nodes, pending):
+    """A partition's `nodes` by GPU type, when they carry more than one.
+
+    Each row is one type's share of the partition, shaped like a partition
+    summary so the same cells describe it: the nodes carrying the type (a
+    node with several counts under each), their CPUs and memory, and the
+    type's own GPUs. `pending` counts the partition's pending jobs by the
+    type they ask for (`slurm.parse_pending_partition_gpus`; None if unknown).
+    """
+    types = sorted({gpu for node in nodes for gpu in node["cfg_gpus"]})
+    if len(types) < 2:
+        return []
+    rows = []
+    for gpu in types:
+        carrying = [node for node in nodes if gpu in node["cfg_gpus"]]
+        usage = resource_usage(carrying)
+        rows.append(
+            {
+                "name": gpu,
+                **usage,
+                "gpus": {gpu: usage["gpus"][gpu]},
+                # Like a partition's, with only this type among the GPUs.
+                "node_kinds": Counter(
+                    (
+                        node["cpu_efctv"],
+                        node["mem_tot"] // 1024,
+                        frozenset({(gpu, node["cfg_gpus"][gpu])}),
+                    )
+                    for node in carrying
+                ),
+                "pending": None if pending is None else pending.get(gpu, 0),
+            }
+        )
+    return rows
+
+
+def summarize_partitions(partitions, nodes, pending, scopes, groups, pending_gpus=None):
+    """Each partition with its usage; `pending` counts its pending jobs, and
+    `pending_gpus` those by GPU type, for its GPU types' rows (None: unknown)."""
     members = defaultdict(list)
     for node in nodes:
         for name in node["partitions"]:
@@ -536,6 +574,13 @@ def summarize_partitions(partitions, nodes, pending, scopes, groups):
                 "pending": None
                 if pending is None
                 else pending.get(partition["name"], 0),
+                # A row per GPU type, where the nodes carry several.
+                "gpu_types": summarize_gpu_types(
+                    members.get(partition["name"], []),
+                    None
+                    if pending_gpus is None
+                    else pending_gpus.get(partition["name"], {}),
+                ),
                 "usable": usable,
                 "access_note": reason,
             }
@@ -733,6 +778,9 @@ class Collector:
                 None if pending is None else slurm.parse_pending(pending),
                 scopes,
                 self.info.groups,
+                None
+                if pending is None
+                else slurm.parse_pending_partition_gpus(pending),
             ),
             hardware=summarize_hardware(nodes),
             scopes=scopes,

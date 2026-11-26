@@ -938,6 +938,18 @@ class JobTests(unittest.TestCase):
         )
         self.assertEqual(slurm.parse_pending_gpus(""), {})
 
+    def test_counts_each_partitions_pending_jobs_by_gpu_type(self):
+        self.assertEqual(
+            slurm.parse_pending_partition_gpus(PENDING),
+            {
+                # The job naming both partitions counts in each.
+                "full": {"nvidia_b200": 1, "nvidia_b200_2g.45gb": 1},
+                "mig": {"nvidia_b200_2g.45gb": 2, "gpu": 1},
+                "cpu": {None: 1},
+            },
+        )
+        self.assertEqual(slurm.parse_pending_partition_gpus(""), {})
+
 
 # `squeue -h -t PD -O "Partition:|,tres-alloc:|"` on RCL, where every partition
 # is on one node; the third job named two partitions, the last an untyped GPU.

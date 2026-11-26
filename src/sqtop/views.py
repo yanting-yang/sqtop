@@ -122,6 +122,29 @@ def node_gpus(summary):
     return f"{totals[0]}-{totals[-1]} GPUs ({len(configs)} kinds)"
 
 
+def gpu_type_label(row, last):
+    """A GPU type under its partition's row, indented: `  ├ h100`."""
+    return f"  {'└' if last else '├'} {row['name']}"
+
+
+def gpu_type_per_node(row):
+    """GPUs of the row's type on each node carrying it: `4`, or `2/4`."""
+    return _per_node(count for _, _, gpus in row["node_kinds"] for _, count in gpus)
+
+
+def gpu_type_free(row):
+    """Free/total GPUs of the row's type; its name is the row's label."""
+    (counts,) = row["gpus"].values()
+    return f"{counts['free']}/{counts['total']}"
+
+
+def gpu_type_summary(summary, row):
+    """A partition narrowed to one of its GPU types (`gpu_type`), for that
+    row's details."""
+    name = f"{summary['name']} › {row['name']}"
+    return {**summary, **row, "name": name, "gpu_type": row["name"]}
+
+
 def node_kinds(summary):
     """Each hardware kind in a partition with its node count, largest first."""
     return [
