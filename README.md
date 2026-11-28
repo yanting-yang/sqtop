@@ -14,8 +14,8 @@ any cluster you can reach over ssh.
   only) is test-submitted at every partition time limit with `sbatch --test-only`, so
   you see when 1 GPU for 3 hours would start next to 8 GPUs for a week.
 - **Partitions and hardware.** Load, free GPUs and CPUs, idle nodes and pending jobs per
-  partition, per GPU type where a partition mixes several, or per kind of node, and
-  which partitions your accounts may use.
+  partition, per kind of node and GPU type where a partition mixes several, and which
+  partitions your accounts may use.
 - **Your limits.** Every account/QOS pair you can use, with its job, GPU and wall-time
   caps and your fair share, read from Slurm even where `sacctmgr` does not work.
 - **Your jobs.** Running and pending jobs, with expected start times and planned nodes,
@@ -105,6 +105,7 @@ with its own buttons.
 | a row or cell | Select it; the Details panel follows the selection |
 | a highlighted Accounts & QOS row | Probe with that account/QOS |
 | the Partitions title | Switch between Partitions and Nodes by hardware (a single-node cluster has one Hardware table instead) |
+| `▸` / `▾` before a Partitions row | Show / hide the rows below it: a partition's kinds of node, a kind's GPU types |
 | the account/QOS above the estimates | Probe with the next account/QOS |
 | the command under the estimates | Switch between `sbatch` and `srun` probes |
 | `Submit` in Details | Submit the selected `sbatch` request, after you confirm |
@@ -126,23 +127,35 @@ The bottom bar also shows which version of sqtop is running.
   CPU-only partitions) in use: `█` allocated, `▒` unavailable (down, drained, reserved),
   `░` free. `Free` is free/total per GPU type, `Idle` counts wholly idle nodes, `Pend`
   counts everyone's pending jobs, and `Max` is the time limit.
-- **GPU types of a partition.** A partition whose nodes carry several GPU types, such
-  as whole GPUs on some nodes and MIG slices on others, lists each type on a row of its
-  own below it, indented:
+- **Kinds of node and GPU types of a partition.** A partition whose nodes are not all
+  alike, in CPUs, memory or GPUs, has a `▸` before its name. Click it to list each kind
+  of node on a row of its own below the partition; a kind that carries several GPU
+  types, such as MIG slices, has a `▸` of its own that lists each type. `▾` hides them
+  again. Everything starts closed, and what you open stays open across refreshes:
 
   ```
-  gpubase_bygpu_b5                   yes  48  1125G  h100:4 / 16 GPUs (3 types)  ██████░░  80%  61/360 GPUs (4 types)  0/30  57  7-00:00:00
-    ├ h100                                48  1125G  4                           █████▒▒░  62%  3/40                   0/10  56
-    ├ nvidia_h100_80gb_hbm3_1g.10gb       48  1125G  8                           █████░░░  67%  53/160                 0/20  0
-    ├ nvidia_h100_80gb_hbm3_2g.20gb       48  1125G  4                           ████████ 100%  0/80                   0/20  1
-    └ nvidia_h100_80gb_hbm3_3g.40gb       48  1125G  4                           ████████  94%  5/80                   0/20  0
+  ▾ gpubase_interac     yes  48/64  498/1000G  4-16 GPUs (3 kinds)  ███████░  90%  69/720 GPUs (5 types)  0/89  1  0-08:00:00
+    ├   46 nodes             48     498G       a100:4               ████████  97%  1/184 a100             0/46  1
+    ├ ▾ 32 nodes             48     498G       15 GPUs (4 types)    ███████░  86%  68/480 GPUs (4 types)  0/32
+    │   ├ a100_1g.5gb                          7                    ███████░  87%  29/224                       0
+    │   ├ a100_2g.10gb                         4                    ██████░░  71%  37/128                       0
+    │   ├ a100_3g.20gb                         3                    ████████  99%  1/96                         0
+    │   └ a100_4g.20gb                         1                    ████████  97%  1/32                         0
+    ├   10 nodes             64     1000G      a100:4               ████████ 100%  0/40 a100              0/10  1
+    └ ▸ 1 node               48     498G       16 GPUs (3 types)    ████████ 100%  0/16 GPUs (3 types)    0/1
+  ▸ cpubase_interac     yes  64     250/500G   -                    ███████░  88%  4316/47872 CPUs        22/748  0  0-08:00:00
   ```
 
-  A type's row describes the nodes that carry it: their CPUs and memory, how many GPUs
-  of the type each has, the type's load and free/total, how many of those nodes are
-  idle, and the partition's pending jobs that ask for that type. A job asking for a GPU
-  of no particular type counts only on the partition's row. Click a type for its
-  details.
+  A kind's row reads like a partition's, for its nodes alone: 46 nodes of 48 CPUs,
+  498 GB and 4 `a100` each. A type's row has its GPUs on each of those nodes, its load
+  and its free/total. `Pend` on a row with one GPU type is the partition's pending jobs
+  asking for that type; they can run on any row offering it, so the same number shows
+  on each. A job asking for a GPU of no particular type counts only on the partition's
+  row. Kinds that differ only in memory count too: `cpubase_interac` there opens to its
+  724 nodes of 250 GB and its 24 of 500 GB, each with its free CPUs. With a single kind
+  of node the GPU types are directly below the partition. Click elsewhere on a row for
+  its details, which name a kind's nodes. The text report and the hourly email, which
+  cannot be clicked, list every row.
 - **Hardware**, in place of Partitions on a cluster with a single node. Its partitions
   all share that node, so Slurm reports the same hardware for each; the table has one
   row per resource instead: CPUs, memory, then each GPU type. `Load` and `Free` are as

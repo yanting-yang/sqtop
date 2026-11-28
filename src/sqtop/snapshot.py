@@ -516,13 +516,13 @@ def partition_access(partition, accounts, qos_names, groups):
 
 
 def summarize_gpu_types(nodes, pending):
-    """A partition's `nodes` by GPU type, when they carry more than one.
+    """`nodes` by GPU type, when they carry more than one: a row per type.
 
-    Each row is one type's share of the partition, shaped like a partition
-    summary so the same cells describe it: the nodes carrying the type (a
-    node with several counts under each), their CPUs and memory, and the
-    type's own GPUs. `pending` counts the partition's pending jobs by the
-    type they ask for (`slurm.parse_pending_partition_gpus`; None if unknown).
+    Each row is one type's share of the nodes, shaped like a partition
+    summary so the same cells describe it: the nodes carrying the type,
+    their CPUs and memory, and the type's own GPUs. `pending` counts the
+    partition's pending jobs by the type they ask for
+    (`slurm.parse_pending_partition_gpus`; None if unknown).
     """
     types = sorted({gpu for node in nodes for gpu in node["cfg_gpus"]})
     if len(types) < 2:
@@ -533,7 +533,10 @@ def summarize_gpu_types(nodes, pending):
         usage = resource_usage(carrying)
         rows.append(
             {
+                "kind": "gpu",
                 "name": gpu,
+                "gpu_type": gpu,
+                "rows": [],
                 **usage,
                 "gpus": {gpu: usage["gpus"][gpu]},
                 # Like a partition's, with only this type among the GPUs.
@@ -551,9 +554,50 @@ def summarize_gpu_types(nodes, pending):
     return rows
 
 
+def summarize_node_kinds(nodes, pending):
+    """The rows below a partition's own: its `nodes` by kind, then GPU type.
+
+    A partition with several kinds of node (`node_hw_key`: CPUs, memory
+    and GPUs, so two sizes of memory are two kinds) has a row per kind, the
+    one with most nodes first as its details list them, and each kind
+    carrying several GPU types has a row per type below it
+    (`summarize_gpu_types`). With a single kind the types follow the
+    partition itself.
+
+    Each row is shaped like a partition summary over its nodes. `gpu_type`
+    is the one type a row stands for (None with several or none), and
+    `pending` the partition's pending jobs asking for that type: the same
+    jobs on every row offering it, as they can run on any of them.
+    """
+    groups = defaultdict(list)
+    for node in nodes:
+        groups[node_hw_key(node)].append(node)
+    if len(groups) < 2:
+        return summarize_gpu_types(nodes, pending)
+    rows = []
+    most_first = sorted(groups.items(), key=lambda item: len(item[1]), reverse=True)
+    for key, group in most_first:
+        types = [gpu for gpu, _ in key[2]]
+        only = types[0] if len(types) == 1 else None
+        asked = None if pending is None or only is None else pending.get(only, 0)
+        rows.append(
+            {
+                "kind": "nodes",
+                "name": hw_key_label(key),
+                "names": [node["name"] for node in group],
+                "gpu_type": only,
+                "pending": asked,
+                "rows": summarize_gpu_types(group, pending),
+                **resource_usage(group),
+                "node_kinds": Counter({key: len(group)}),
+            }
+        )
+    return rows
+
+
 def summarize_partitions(partitions, nodes, pending, scopes, groups, pending_gpus=None):
     """Each partition with its usage; `pending` counts its pending jobs, and
-    `pending_gpus` those by GPU type, for its GPU types' rows (None: unknown)."""
+    `pending_gpus` those by GPU type, for the rows below it (None: unknown)."""
     members = defaultdict(list)
     for node in nodes:
         for name in node["partitions"]:
@@ -574,8 +618,8 @@ def summarize_partitions(partitions, nodes, pending, scopes, groups, pending_gpu
                 "pending": None
                 if pending is None
                 else pending.get(partition["name"], 0),
-                # A row per GPU type, where the nodes carry several.
-                "gpu_types": summarize_gpu_types(
+                # Below it: its kinds of node and their GPU types.
+                "rows": summarize_node_kinds(
                     members.get(partition["name"], []),
                     None
                     if pending_gpus is None

@@ -122,9 +122,63 @@ def node_gpus(summary):
     return f"{totals[0]}-{totals[-1]} GPUs ({len(configs)} kinds)"
 
 
-def gpu_type_label(row, last):
-    """A GPU type under its partition's row, indented: `  ├ h100`."""
-    return f"  {'└' if last else '├'} {row['name']}"
+def sub_rows(summary, shown=None, slot=0):
+    """The rows below a partition's own, down its tree: (indent, label, row,
+    room).
+
+    Its kinds of node and their GPU types (`snapshot.summarize_node_kinds`).
+    `indent` places a label under its parent: `  ├ ` before `46 nodes`,
+    `  │ └ ` before `a100`. A row is its parent narrowed to it and named by
+    its path (`partition › kind › type`), so a partition's cells and details
+    describe it too.
+
+    The dashboard shows the rows below a row only once that one is opened:
+    `shown` names the opened ones (None: every row, as the report prints
+    them). It draws a button to open a row before its label, in `slot`
+    cells; `room` says a label gets them, which those next to a row with
+    rows below it do, to stay in line, and what is below is indented past.
+    """
+
+    def walk(parent, indent):
+        if shown is not None and parent["name"] not in shown:
+            return
+        rows = parent["rows"]
+        room = slot if any(row["rows"] for row in rows) else 0
+        for index, row in enumerate(rows):
+            last = index == len(rows) - 1
+            label = row["name"]
+            if row["kind"] == "nodes":
+                count = row["node_count"]
+                label = f"{count} node{'' if count == 1 else 's'}"
+            narrowed = {**parent, **row, "name": f"{parent['name']} › {row['name']}"}
+            yield f"{indent}{'└' if last else '├'} ", label, narrowed, bool(room)
+            below = indent + ("  " if last else "│ ") + " " * room
+            yield from walk(narrowed, below)
+
+    yield from walk(summary, "  ")
+
+
+def sub_row_cells(row):
+    """CPU/node, Mem/node, GPU/node, Free, Idle and Pend of a row of `sub_rows`.
+
+    A kind of node has a partition's cells. A GPU type's nodes are those of
+    the row above it, so it has only its GPUs: how many per node and
+    free/total, as bare numbers since the type is the row's label. Pend is
+    for the one GPU type a row stands for, and blank without one.
+    """
+    if row["kind"] == "nodes":
+        cells = (
+            node_cpus(row),
+            node_mem(row),
+            node_gpus(row),
+            free_resources(row),
+            idle_nodes(row),
+        )
+    else:
+        cells = ("", "", gpu_type_per_node(row), gpu_type_free(row), "")
+    if row["gpu_type"] is None:
+        return (*cells, "")
+    return (*cells, UNKNOWN if row["pending"] is None else str(row["pending"]))
 
 
 def gpu_type_per_node(row):
@@ -138,11 +192,10 @@ def gpu_type_free(row):
     return f"{counts['free']}/{counts['total']}"
 
 
-def gpu_type_summary(summary, row):
-    """A partition narrowed to one of its GPU types (`gpu_type`), for that
-    row's details."""
-    name = f"{summary['name']} › {row['name']}"
-    return {**summary, **row, "name": name, "gpu_type": row["name"]}
+def node_names(names, limit=40):
+    """Node names in a line, saying how many there are beyond `limit`."""
+    listed = ", ".join(names[:limit])
+    return listed + (f", … ({len(names)} nodes)" if len(names) > limit else "")
 
 
 def node_kinds(summary):

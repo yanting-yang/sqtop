@@ -408,67 +408,134 @@ class SummaryTests(unittest.TestCase):
 
         self.assertIsNone(summary[0]["pending"])
 
-    def test_splits_a_partition_with_several_gpu_types_by_type(self):
-        # Like Fir's gpubase_bygpu partitions: whole H100s on some nodes and
-        # MIG slices of several sizes on the others.
-        slices = {"h100_1g.10gb": 8, "h100_2g.20gb": 4}
+    def test_lists_a_gpu_partitions_kinds_of_node_then_their_gpu_types(self):
+        # Like Narval's gpubase_interac: whole A100s on nodes of two sizes,
+        # and MIG slices on others.
+        slices = {"a100_1g": 7, "a100_2g": 4}
         nodes = [
-            node("w1", cfg_gpus={"h100": 4}, alloc_gpus={"h100": 3}),
-            node("w2", state="IDLE+DRAIN", cfg_gpus={"h100": 4}, alloc_gpus={}),
-            node("m1", cpu_efctv=48, cfg_gpus=slices, alloc_gpus={"h100_1g.10gb": 5}),
+            node("w1", cfg_gpus={"a100": 4}, alloc_gpus={"a100": 3}),
+            node("big", cpu_efctv=64, mem_tot=1000 * 1024, cfg_gpus={"a100": 4}),
+            node("m1", cpu_efctv=48, cfg_gpus=slices, alloc_gpus={"a100_1g": 5}),
+            node("w2", state="IDLE+DRAIN", cfg_gpus={"a100": 4}, alloc_gpus={}),
         ]
-        asked = {"gpu": {"h100": 6, "h100_2g.20gb": 2, "gpu": 1}, "long": {"h100": 9}}
+        asked = {"gpu": {"a100": 6, "a100_2g": 2, "gpu": 1}, "long": {"a100": 9}}
 
         (summary,) = snapshot.summarize_partitions(
             [partition("gpu")], nodes, {"gpu": 9}, [], None, asked
         )
 
-        whole, small, large = summary["gpu_types"]
+        # A row per kind of node, the one with most nodes first.
+        whole, big, mig = summary["rows"]
         self.assertEqual(
-            [row["name"] for row in summary["gpu_types"]],
-            ["h100", "h100_1g.10gb", "h100_2g.20gb"],
+            [(row["kind"], row["name"]) for row in summary["rows"]],
+            [
+                ("nodes", "60 CPUs / 512 GB / a100:4"),
+                ("nodes", "64 CPUs / 1000 GB / a100:4"),
+                ("nodes", "48 CPUs / 512 GB / a100_1g:7 / a100_2g:4"),
+            ],
         )
-        # Each has the nodes carrying it and only its own GPUs; a drained
-        # node's spare ones are unavailable.
-        self.assertEqual(whole["node_count"], 2)
-        self.assertEqual(list(whole["gpus"]), ["h100"])
-        counts = whole["gpus"]["h100"]
+        # Each is its nodes' share of the partition; a drained node's spare
+        # GPUs are unavailable.
+        self.assertEqual((whole["node_count"], whole["names"]), (2, ["w1", "w2"]))
+        counts = whole["gpus"]["a100"]
         self.assertEqual(
             [counts[key] for key in ("total", "allocated", "free", "unavailable")],
             [8, 3, 1, 4],
         )
         self.assertEqual(whole["cpus"]["total"], 120)
-        self.assertEqual((small["node_count"], small["cpus"]["total"]), (1, 48))
-        self.assertEqual(small["gpus"]["h100_1g.10gb"]["free"], 3)
-        self.assertEqual(large["gpus"]["h100_2g.20gb"]["free"], 4)
-        # A node with several types counts under each, with that type alone.
         self.assertEqual(
-            list(large["node_kinds"]), [(48, 512, frozenset({("h100_2g.20gb", 4)}))]
+            dict(big["node_kinds"]), {(64, 1000, frozenset({("a100", 4)})): 1}
         )
-        # This partition's pending jobs by the type they ask for; the one
-        # asking for any GPU is on no type's row.
-        self.assertEqual([row["pending"] for row in summary["gpu_types"]], [6, 0, 2])
+        # A kind with one GPU type stands for it: the partition's pending
+        # jobs asking for that type wait for either kind offering it.
+        self.assertEqual(
+            (whole["gpu_type"], whole["pending"], whole["rows"]), ("a100", 6, [])
+        )
+        self.assertEqual((big["gpu_type"], big["pending"]), ("a100", 6))
+        # A kind with several has a row per type below it instead.
+        self.assertEqual((mig["gpu_type"], mig["pending"]), (None, None))
+        small, large = mig["rows"]
+        self.assertEqual(
+            [(row["kind"], row["name"], row["gpu_type"]) for row in mig["rows"]],
+            [("gpu", "a100_1g", "a100_1g"), ("gpu", "a100_2g", "a100_2g")],
+        )
+        self.assertEqual(list(small["gpus"]), ["a100_1g"])
+        self.assertEqual(small["gpus"]["a100_1g"]["free"], 2)
+        self.assertEqual(large["gpus"]["a100_2g"]["free"], 4)
+        self.assertEqual(
+            list(large["node_kinds"]), [(48, 512, frozenset({("a100_2g", 4)}))]
+        )
+        # The job asking for any GPU is on the partition's row only.
+        self.assertEqual([row["pending"] for row in mig["rows"]], [0, 2])
         self.assertEqual(summary["pending"], 9)
 
-    def test_keeps_one_row_for_a_partition_with_one_gpu_type(self):
+    def test_lists_gpu_types_below_a_partition_with_one_kind_of_node(self):
+        # Like Fir's gpubase_interac: one node of MIG slices.
+        slices = {"h100_1g": 8, "h100_2g": 4}
+        nodes = [node("a", cfg_gpus=slices), node("b", cfg_gpus=slices)]
+
+        (summary,) = snapshot.summarize_partitions(
+            [partition("gpu")], nodes, {}, [], None, {"gpu": {"h100_2g": 3}}
+        )
+
+        self.assertEqual(
+            [(row["kind"], row["name"], row["pending"]) for row in summary["rows"]],
+            [("gpu", "h100_1g", 0), ("gpu", "h100_2g", 3)],
+        )
+        self.assertEqual(summary["rows"][0]["node_count"], 2)
+
+    def test_lists_kinds_of_node_that_differ_only_in_memory(self):
+        # Like Narval's cpubase_interac: most nodes of 250 GB, a few of 500.
+        nodes = [
+            node("c1", cfg_gpus={}, alloc_gpus={}),
+            node("c2", state="IDLE", cfg_gpus={}, alloc_gpus={}, cpu_alloc=0),
+            node("c3", cfg_gpus={}, alloc_gpus={}, mem_tot=1000 * 1024),
+        ]
+
+        (summary,) = snapshot.summarize_partitions(
+            [partition("gpu")], nodes, {"gpu": 4}, [], None, {"gpu": {None: 4}}
+        )
+
+        small, large = summary["rows"]
+        self.assertEqual(
+            [(row["kind"], row["name"], row["node_count"]) for row in summary["rows"]],
+            [("nodes", "60 CPUs / 512 GB", 2), ("nodes", "60 CPUs / 1000 GB", 1)],
+        )
+        self.assertEqual((small["cpus"]["free"], small["cpus"]["total"]), (100, 120))
+        self.assertEqual((large["cpus"]["free"], large["cpus"]["total"]), (40, 60))
+        # No GPU type to stand for, so no pending jobs of its own, and no
+        # rows below it.
+        self.assertEqual(
+            (small["gpu_type"], small["pending"], small["rows"]), (None, None, [])
+        )
+
+    def test_adds_no_rows_where_the_nodes_are_all_alike(self):
         gpu, cpu = snapshot.summarize_partitions(
             [partition("gpu"), partition("cpu")],
-            [node("a"), node("b"), node("c", partitions=("cpu",), cfg_gpus={})],
+            [
+                # One kind of node with one GPU type, and one without GPUs.
+                node("a"),
+                node("b"),
+                node("c", partitions=("cpu",), cfg_gpus={}),
+                node("d", partitions=("cpu",), cfg_gpus={}),
+            ],
             {},
             [],
             None,
         )
 
-        self.assertEqual((gpu["gpu_types"], cpu["gpu_types"]), ([], []))
+        self.assertEqual((gpu["rows"], cpu["rows"]), ([], []))
 
     def test_marks_pending_by_gpu_type_unknown_when_squeue_failed(self):
-        nodes = [node("a"), node("b", cfg_gpus={"h100": 4})]
+        nodes = [node("a"), node("b", cfg_gpus={"h100": 2, "t4": 8})]
 
         (summary,) = snapshot.summarize_partitions(
             [partition("gpu")], nodes, None, [], None
         )
 
-        self.assertEqual([row["pending"] for row in summary["gpu_types"]], [None] * 2)
+        whole, mixed = summary["rows"]
+        self.assertEqual((whole["gpu_type"], whole["pending"]), ("l40s", None))
+        self.assertEqual([row["pending"] for row in mixed["rows"]], [None, None])
 
     def test_groups_hardware_by_whole_gibibyte(self):
         nodes = [

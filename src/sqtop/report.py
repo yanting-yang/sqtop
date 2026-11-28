@@ -51,23 +51,13 @@ def print_partitions(snap, out=None):
                 views.max_time(summary),
             )
         )
-        # Its GPU types, where its nodes carry several, indented below it.
-        types = summary["gpu_types"]
-        for index, row in enumerate(types):
-            rows.append(
-                (
-                    views.gpu_type_label(row, index == len(types) - 1),
-                    "",
-                    views.node_cpus(row),
-                    views.node_mem(row),
-                    views.gpu_type_per_node(row),
-                    f"{views.load_percent(row)}%",
-                    views.gpu_type_free(row),
-                    views.idle_nodes(row),
-                    "?" if row["pending"] is None else row["pending"],
-                    "",
-                )
-            )
+        # Below it, indented: its kinds of node, and the GPU types of a kind
+        # that carries several.
+        for indent, label, row, _ in views.sub_rows(summary):
+            cpus, mem, gpus, free, idle, waiting = views.sub_row_cells(row)
+            load = f"{views.load_percent(row)}%"
+            label = indent + label
+            rows.append((label, "", cpus, mem, gpus, load, free, idle, waiting, ""))
     print("Partitions (* default):", file=out)
     if not rows:
         print("none reported\n", file=out)

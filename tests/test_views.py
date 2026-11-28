@@ -71,44 +71,183 @@ class ResourceTests(unittest.TestCase):
         )
 
 
-class GpuTypeTests(unittest.TestCase):
-    """The rows of a partition's GPU types, below its own."""
+class SubRowTests(unittest.TestCase):
+    """The rows below a partition's own: its kinds of node, then GPU types."""
 
-    def test_describes_each_gpu_type_of_a_partition(self):
-        p = summary(
-            node("a", cfg_gpus={"h100": 4}, alloc_gpus={"h100": 1}),
-            node("b", cpu_efctv=48, cfg_gpus={"h100": 2, "t4": 8}, alloc_gpus={}),
+    def partition(self, asked=None):
+        # Like Narval's gpubase_interac: whole GPUs on nodes of two sizes and
+        # MIG slices, cut two ways, on others.
+        nodes = [
+            node("w1", cfg_gpus={"a100": 4}, alloc_gpus={"a100": 1}),
+            node("w2", cfg_gpus={"a100": 4}, alloc_gpus={"a100": 4}),
+            node(
+                "m1",
+                cpu_efctv=48,
+                cfg_gpus={"a100_1g": 7, "a100_2g": 4},
+                alloc_gpus={"a100_1g": 5},
+            ),
+            node(
+                "big",
+                state="IDLE",
+                cpu_efctv=64,
+                mem_tot=1000 * 1024,
+                cfg_gpus={"a100": 4},
+                alloc_gpus={},
+            ),
+            node("m2", cfg_gpus={"a100_1g": 8, "a100_2g": 4}, alloc_gpus={}),
+        ]
+        return snapshot.summarize_partitions(
+            [partition("gpu")], nodes, {}, [], None, asked
+        )[0]
+
+    def test_indents_each_row_under_its_parent(self):
+        rows = list(views.sub_rows(self.partition()))
+
+        self.assertEqual(
+            [indent + label for indent, label, _, _ in rows],
+            [
+                "  ├ 2 nodes",
+                "  ├ 1 node",
+                "  │ ├ a100_1g",
+                "  │ └ a100_2g",
+                "  ├ 1 node",
+                # Below the last kind there is no line to carry on.
+                "  └ 1 node",
+                "    ├ a100_1g",
+                "    └ a100_2g",
+            ],
         )
-        h100, t4 = p["gpu_types"]
+        # Each is named by its path, which tells apart the same type under
+        # two kinds of node.
+        self.assertEqual(
+            [row["name"] for _, _, row, _ in rows][:3],
+            [
+                "gpu › 60 CPUs / 512 GB / a100:4",
+                "gpu › 48 CPUs / 512 GB / a100_1g:7 / a100_2g:4",
+                "gpu › 48 CPUs / 512 GB / a100_1g:7 / a100_2g:4 › a100_1g",
+            ],
+        )
+        self.assertEqual(len({row["name"] for _, _, row, _ in rows}), len(rows))
 
-        # Indented under the partition; the last closes the list.
-        self.assertEqual(views.gpu_type_label(h100, False), "  ├ h100")
-        self.assertEqual(views.gpu_type_label(t4, True), "  └ t4")
-        # The type is the row's label, so its cells are bare numbers.
-        self.assertEqual(views.gpu_type_per_node(h100), "2/4")
-        self.assertEqual(views.gpu_type_per_node(t4), "8")
-        self.assertEqual(views.gpu_type_free(h100), "5/6")
-        self.assertEqual(views.gpu_type_free(t4), "8/8")
-        # The partition's cells describe the nodes carrying the type.
-        self.assertEqual(views.node_cpus(h100), "48/60")
-        self.assertEqual(views.node_cpus(t4), "48")
-        self.assertEqual(views.node_mem(t4), "512G")
-        self.assertEqual(views.idle_nodes(h100), "0/2")
-        self.assertEqual(views.main_resource(h100), (1, 5, 6))
-        self.assertEqual(views.load_percent(t4), 0)
+    def test_shows_only_the_rows_below_an_opened_one(self):
+        p = self.partition()
+        slices = "gpu › 60 CPUs / 512 GB / a100_1g:8 / a100_2g:4"
 
-    def test_narrows_a_partition_to_one_gpu_type_for_its_details(self):
-        p = summary(node("a"), node("b", cfg_gpus={"t4": 8}, alloc_gpus={}))
+        def labels(shown):
+            return [
+                indent + ("[] " if room else "") + label
+                for indent, label, _, room in views.sub_rows(p, shown, slot=2)
+            ]
 
-        narrowed = views.gpu_type_summary(p, p["gpu_types"][1])
+        # Nothing until the partition is opened, then its kinds of node,
+        # each with room for a button as some have rows below them.
+        self.assertEqual(labels(set()), [])
+        self.assertEqual(
+            labels({"gpu"}),
+            ["  ├ [] 2 nodes", "  ├ [] 1 node", "  ├ [] 1 node", "  └ [] 1 node"],
+        )
+        # An opened kind's GPU types are indented past its button; they
+        # have nothing below them, so no room for one.
+        self.assertEqual(
+            labels({"gpu", slices})[3:],
+            ["  └ [] 1 node", "      ├ a100_1g", "      └ a100_2g"],
+        )
+        other = "gpu › 48 CPUs / 512 GB / a100_1g:7 / a100_2g:4"
+        self.assertEqual(
+            labels({"gpu", other})[1:4],
+            ["  ├ [] 1 node", "  │   ├ a100_1g", "  │   └ a100_2g"],
+        )
+        # A kind stays opened while its partition is closed.
+        self.assertEqual(labels({slices}), [])
 
-        self.assertEqual(narrowed["name"], "gpu › t4")
-        self.assertEqual(narrowed["gpu_type"], "t4")
-        self.assertEqual((narrowed["node_count"], p["node_count"]), (1, 2))
-        self.assertEqual(list(narrowed["gpus"]), ["t4"])
-        # What belongs to the partition stays.
-        self.assertEqual(narrowed["max_time"], p["max_time"])
-        self.assertTrue(narrowed["usable"])
+    def test_describes_a_kind_of_node_like_a_partition(self):
+        p = self.partition({"gpu": {"a100": 6, "a100_2g": 2}})
+        rows = [row for _, _, row, _ in views.sub_rows(p)]
+        whole, slices, _, _, big, _, _, _ = rows
+
+        # CPU/node, Mem/node, GPU/node, Free, Idle and Pend.
+        self.assertEqual(
+            views.sub_row_cells(whole), ("60", "512G", "a100:4", "3/8 a100", "0/2", "6")
+        )
+        self.assertEqual(
+            views.sub_row_cells(big), ("64", "1000G", "a100:4", "4/4 a100", "1/1", "6")
+        )
+        # With several GPU types it stands for none: its types' rows count
+        # the pending jobs.
+        self.assertEqual(
+            views.sub_row_cells(slices),
+            (
+                "48",
+                "512G",
+                "a100_1g:7 + a100_2g:4",
+                "2/7 a100_1g, 4/4 a100_2g",
+                "0/1",
+                "",
+            ),
+        )
+        self.assertEqual(views.main_resource(whole), (5, 3, 8))
+        # What belongs to the partition stays, for the row's details.
+        self.assertEqual(whole["max_time"], p["max_time"])
+        self.assertTrue(whole["usable"])
+        self.assertEqual(whole["names"], ["w1", "w2"])
+
+    def test_gives_a_gpu_type_only_its_own_cells(self):
+        p = self.partition({"gpu": {"a100": 6, "a100_2g": 2}})
+        rows = [row for _, _, row, _ in views.sub_rows(p)]
+
+        # Its nodes are those of the row above; the type is its label.
+        self.assertEqual(views.sub_row_cells(rows[2]), ("", "", "7", "2/7", "", "0"))
+        self.assertEqual(views.sub_row_cells(rows[3]), ("", "", "4", "4/4", "", "2"))
+        self.assertEqual(views.sub_row_cells(rows[6]), ("", "", "8", "8/8", "", "0"))
+        self.assertEqual(views.main_resource(rows[2]), (5, 2, 7))
+        self.assertEqual(views.load_percent(rows[3]), 0)
+        # squeue failed: how many ask for a type is unknown.
+        unknown = [row for _, _, row, _ in views.sub_rows(self.partition())]
+        self.assertEqual(views.sub_row_cells(unknown[0])[-1], "?")
+        self.assertEqual(views.sub_row_cells(unknown[1])[-1], "")
+        self.assertEqual(views.sub_row_cells(unknown[2])[-1], "?")
+
+    def test_describes_kinds_of_node_without_gpus_by_their_cpus(self):
+        # Like Narval's cpubase_interac: two sizes of memory.
+        p = summary(
+            node("c1", cfg_gpus={}, alloc_gpus={}),
+            node("c2", state="IDLE", cfg_gpus={}, alloc_gpus={}, cpu_alloc=0),
+            node("c3", cfg_gpus={}, alloc_gpus={}, mem_tot=1000 * 1024),
+        )
+
+        rows = list(views.sub_rows(p))
+
+        # No kind has rows below it, so none needs room for a button.
+        self.assertEqual(
+            [(indent + label, room) for indent, label, _, room in rows],
+            [("  ├ 2 nodes", False), ("  └ 1 node", False)],
+        )
+        self.assertEqual(
+            [views.sub_row_cells(row) for _, _, row, _ in rows],
+            [
+                ("60", "512G", "-", "100/120 CPUs", "1/2", ""),
+                ("60", "1000G", "-", "40/60 CPUs", "0/1", ""),
+            ],
+        )
+        self.assertEqual(views.main_resource(rows[0][2]), (20, 100, 120))
+
+    def test_lists_gpu_types_directly_below_a_single_kind(self):
+        p = summary(node("a", cfg_gpus={"h100_1g": 8, "h100_2g": 4}, alloc_gpus={}))
+
+        rows = list(views.sub_rows(p))
+
+        self.assertEqual(
+            [indent + label for indent, label, _, _ in rows],
+            ["  ├ h100_1g", "  └ h100_2g"],
+        )
+        self.assertEqual(rows[1][2]["name"], "gpu › h100_2g")
+        self.assertEqual(list(views.sub_rows(summary(node("a"), node("b")))), [])
+
+    def test_lists_node_names_up_to_a_limit(self):
+        self.assertEqual(views.node_names(["a", "b"]), "a, b")
+        self.assertEqual(
+            views.node_names(["a", "b", "c"], limit=2), "a, b, … (3 nodes)"
+        )
 
 
 class PerNodeTests(unittest.TestCase):

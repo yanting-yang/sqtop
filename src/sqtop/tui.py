@@ -75,6 +75,8 @@ UNREACHED = object()
 ACCESS_SECONDS = 60
 # After a cluster's name on its tab, once it is known whether it can be.
 ACCESS_MARKS = {True: ("✓", "green"), False: ("✗", "red")}
+# The button before a Partitions row with rows below it, by whether they show.
+TOGGLES = {True: "▾ ", False: "▸ "}
 # Below this width the 2x2 grid cannot fit D-HH:MM:SS columns, so panels stack.
 NARROW_WIDTH = 135
 
@@ -536,6 +538,9 @@ class ClusterView(Vertical):
         self.reachable = None
         # True while a check is running.
         self.checking = False
+        # The Partitions rows whose rows below them are shown, by name
+        # (`views.sub_rows`); none until its button is clicked.
+        self.opened = set()
 
     # --- Layout --------------------------------------------------------------
 
@@ -799,26 +804,45 @@ class ClusterView(Vertical):
 
     @staticmethod
     def refill(table, rows):
-        """Replace the rows of `table`, keeping the cursor on the same row."""
+        """Replace the rows of `table`, keeping the cursor on the same row and
+        the table scrolled where it was: clearing it scrolls back to the top."""
         row = table.cursor_row
+        x, y = table.scroll_x, table.scroll_y
         table.clear()
         for key, cells in rows:
             table.add_row(*cells, key=key)
         if table.row_count:
             table.move_cursor(row=min(row, table.row_count - 1), scroll=False)
+        table.scroll_to(x, y, animate=False, immediate=True)
+
+    def tree_label(self, indent, row, label, room):
+        """The first cell of a Partitions row: its place in the tree, then the
+        button that shows or hides the rows below it, if it has any. `room`
+        keeps a row without one in line with those that have."""
+        text = Text(indent)
+        if row["rows"]:
+            click = {"@click": ("app.toggle_rows", (row["name"],))}
+            text.append(
+                TOGGLES[row["name"] in self.opened], Style(bold=True, meta=click)
+            )
+        elif room:
+            text.append(" " * len(TOGGLES[False]))
+        return text.append(label)
 
     def fill_partitions(self):
         rows = []
         # What each row of the table describes, for its details.
         self.partition_rows = []
+        room = any(summary["rows"] for summary in self.snap.partitions)
         for summary in self.snap.partitions:
             usable = Text("yes", "green") if summary["usable"] else Text("no", "red")
             pending = summary["pending"]
+            name = summary["name"] + ("*" if summary["default"] else "")
             rows.append(
                 (
                     summary["name"],
                     (
-                        Text(summary["name"] + ("*" if summary["default"] else "")),
+                        self.tree_label("", summary, name, room),
                         usable,
                         views.node_cpus(summary),
                         views.node_mem(summary),
@@ -832,29 +856,18 @@ class ClusterView(Vertical):
                 )
             )
             self.partition_rows.append(summary)
-            # Its GPU types, where its nodes carry several, each on a row
-            # of its own below it.
-            types = summary["gpu_types"]
-            for index, row in enumerate(types):
-                pending = row["pending"]
-                rows.append(
-                    (
-                        f"{summary['name']}/{row['name']}",
-                        (
-                            views.gpu_type_label(row, index == len(types) - 1),
-                            "",
-                            views.node_cpus(row),
-                            views.node_mem(row),
-                            views.gpu_type_per_node(row),
-                            load_bar(*views.main_resource(row)),
-                            views.gpu_type_free(row),
-                            views.idle_nodes(row),
-                            "?" if pending is None else str(pending),
-                            "",
-                        ),
-                    )
-                )
-                self.partition_rows.append(views.gpu_type_summary(summary, row))
+            # Below it once it is opened, indented: its kinds of node, and
+            # below an opened kind the GPU types it carries, if several.
+            slot = len(TOGGLES[False])
+            for indent, text, row, room_below in views.sub_rows(
+                summary, self.opened, slot
+            ):
+                cpus, mem, gpus, free, idle, waiting = views.sub_row_cells(row)
+                load = load_bar(*views.main_resource(row))
+                label = self.tree_label(indent, row, text, room_below)
+                cells = (label, "", cpus, mem, gpus, load, free, idle, waiting, "")
+                rows.append((row["name"], cells))
+                self.partition_rows.append(row)
         self.refill(self.tables["partitions"], rows)
 
     def fill_hardware(self):
@@ -1207,17 +1220,18 @@ class ClusterView(Vertical):
         if summary.get("preempt_mode", "OFF") != "OFF":
             header.append(f" · preemptible ({summary['preempt_mode']})", "yellow")
         pending = "?" if summary["pending"] is None else summary["pending"]
-        # A GPU type's row (`views.gpu_type_summary`) counts the jobs asking
-        # for that type.
-        asking = " asking for it:" if "gpu_type" in summary else ""
-        lines = [
-            header,
-            Text(
-                f"Nodes {summary['node_count']} "
-                f"({views.state_counts(summary['states'])}) · "
-                f"pending jobs{asking} {pending}"
-            ),
-            Text(" · ".join(views.node_kinds(summary))),
+        nodes = f"Nodes {summary['node_count']} "
+        nodes += f"({views.state_counts(summary['states'])})"
+        # A row below a partition (`views.sub_rows`) counts the pending jobs
+        # asking for the one GPU type it stands for, if it stands for one.
+        if "kind" not in summary:
+            nodes += f" · pending jobs {pending}"
+        elif summary["gpu_type"]:
+            nodes += f" · pending jobs asking for {summary['gpu_type']}: {pending}"
+        lines = [header, Text(nodes), Text(" · ".join(views.node_kinds(summary)))]
+        if summary.get("names"):  # of a kind of node
+            lines.append(Text(views.node_names(summary["names"]), style="dim"))
+        lines += [
             Text(
                 f"CPUs {cpus['free']} free / {cpus['allocated']} allocated / "
                 f"{cpus.get('unavailable', 0)} unavailable of {cpus['total']} · "
@@ -1243,13 +1257,10 @@ class ClusterView(Vertical):
         return Group(*lines)
 
     def hardware_detail(self, group):
-        names = ", ".join(group["names"][:40])
-        if len(group["names"]) > 40:
-            names += f", … ({len(group['names'])} nodes)"
         return Group(
             Text(group["label"], style="bold"),
             Text(views.state_counts(group["states"])),
-            Text(names, style="dim"),
+            Text(views.node_names(group["names"]), style="dim"),
         )
 
     def resource_detail(self, row):
@@ -1673,6 +1684,12 @@ class ClusterView(Vertical):
         self.notify(f"Released job {job_id} on {self.cluster.name}.", title="Released")
         self.refresh_snapshot()
 
+    def action_toggle_rows(self, name):
+        """Show or hide the rows below the Partitions row called `name`."""
+        self.opened ^= {name}
+        self.fill_partitions()
+        self.show_detail()
+
     def action_toggle_nodes(self):
         """Show Nodes by hardware in place of Partitions, or back."""
         if self.snap is not None and self.snap.single_node:
@@ -1948,6 +1965,11 @@ class SqtopApp(App):
         """Switch the visible tab between Partitions and Nodes by hardware (a
         click on either title)."""
         self.view.action_toggle_nodes()
+
+    def action_toggle_rows(self, name):
+        """Show or hide the rows below a Partitions row of the visible tab (a
+        click on the button before its name)."""
+        self.view.action_toggle_rows(name)
 
     def action_next_scope(self):
         """Probe the visible tab with its next account/QOS (a click on the

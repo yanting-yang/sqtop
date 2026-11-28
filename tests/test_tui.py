@@ -151,6 +151,15 @@ class TuiTestCase(unittest.IsolatedAsyncioTestCase):
         await pilot.click(self.app.action_bar, offset=(column + 2, 0))
         await pilot.pause()
 
+    async def click_toggle(self, pilot, row):
+        """Click the button before the label of a Partitions row."""
+        table = self.table("partitions")
+        label = str(table.get_row_at(row)[0])
+        column = next(index for index, mark in enumerate(label) if mark in "▸▾")
+        # Past the border and the cell's padding; below the border and header.
+        await pilot.click(table, offset=(2 + column, row + 2))
+        await pilot.pause()
+
     async def click_row(self, pilot, table_id, row):
         """Click a row of a table, below its border and header."""
         await self.click_cell(pilot, table_id, row, 0)
@@ -745,52 +754,142 @@ class DashboardTests(TuiTestCase):
             # The panel takes no focus: the table it follows keeps it.
             self.assertTrue(self.table("scopes").has_focus)
 
-    async def test_lists_each_gpu_type_of_a_partition_below_it(self):
-        # Like Fir's gpubase_bygpu partitions: whole GPUs and MIG slices.
+    def partition_rows(self):
+        partitions = self.table("partitions")
+        return [
+            [str(cell) for cell in partitions.get_row_at(index)]
+            for index in range(partitions.row_count)
+        ]
+
+    def partition_labels(self):
+        return [row[0] for row in self.partition_rows()]
+
+    async def show_mixed_partition(self, pilot):
+        """A `gpu` partition like Narval's gpubase_interac: whole GPUs on one
+        node, MIG slices on the other."""
         nodes = [
             node("a", cfg_gpus={"h100": 4}, alloc_gpus={"h100": 1}),
             node("b", cfg_gpus={"h100_1g": 8, "h100_2g": 4}, alloc_gpus={"h100_1g": 8}),
         ]
+        await self.settle(pilot)
+        self.view.collector.snap = make_snapshot(
+            nodes=nodes, pending_gpus={"gpu": {"h100": 5}}
+        )
+        await self.click_action(pilot, "Refresh")
+        await self.settle(pilot)
+
+    async def test_opens_a_partitions_kinds_of_node_and_gpu_types_at_a_click(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
-            await self.settle(pilot)
-            self.view.collector.snap = make_snapshot(
-                nodes=nodes, pending_gpus={"gpu": {"h100": 5}}
+            await self.show_mixed_partition(pilot)
+
+            # Closed at first: a button before the partition with rows below
+            # it, and room for one before the other, to stay in line.
+            self.assertEqual(self.partition_labels(), ["▸ gpu*", "  long"])
+
+            # Its kinds of node; the one with several GPU types has a button.
+            await self.click_toggle(pilot, 0)
+            self.assertEqual(
+                self.partition_labels(),
+                ["▾ gpu*", "  ├   1 node", "  └ ▸ 1 node", "  long"],
             )
+            self.assertEqual(self.table("partitions").cursor_row, 0)
+            # That kind's GPU types.
+            await self.click_toggle(pilot, 2)
+            self.assertEqual(
+                self.partition_labels(),
+                [
+                    "▾ gpu*",
+                    "  ├   1 node",
+                    "  └ ▾ 1 node",
+                    "      ├ h100_1g",
+                    "      └ h100_2g",
+                    "  long",
+                ],
+            )
+            self.assertEqual(self.table("partitions").cursor_row, 2)
+
+            # A refresh keeps what is opened.
             await self.click_action(pilot, "Refresh")
             await self.settle(pilot)
+            self.assertEqual(len(self.partition_labels()), 6)
 
-            partitions = self.table("partitions")
-            rows = [
-                [str(cell) for cell in partitions.get_row_at(index)]
-                for index in range(partitions.row_count)
-            ]
-            self.assertEqual(
-                [row[0] for row in rows],
-                ["gpu*", "  ├ h100", "  ├ h100_1g", "  └ h100_2g", "long"],
-            )
-            # The partition's own row is as before; a type's row has the
-            # nodes carrying it, its GPUs per node, free GPUs and pending jobs.
+            # Closing the partition hides everything below it; opened again,
+            # its kind is as it was left.
+            await self.click_toggle(pilot, 0)
+            self.assertEqual(self.partition_labels(), ["▸ gpu*", "  long"])
+            await self.click_toggle(pilot, 0)
+            self.assertEqual(len(self.partition_labels()), 6)
+            # A click elsewhere on a row selects it and opens nothing.
+            await self.click_cell(pilot, "partitions", 0, 2)
+            self.assertEqual(len(self.partition_labels()), 6)
+
+    async def test_describes_the_rows_below_a_partition(self):
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.show_mixed_partition(pilot)
+            await self.click_toggle(pilot, 0)
+            await self.click_toggle(pilot, 2)
+            rows = self.partition_rows()
+
+            # The partition's own row is as before. A kind of node has the
+            # same cells; a GPU type below it only its own.
             self.assertEqual(rows[0][6], "7/16 GPUs (3 types)")
             self.assertEqual(
                 rows[1][1:5] + rows[1][6:],
-                ["", "60", "512G", "4", "3/4", "0/1", "5", ""],
+                ["", "60", "512G", "h100:4", "3/4 h100", "0/1", "5", ""],
             )
             self.assertEqual(rows[1][5], "██░░░░░░  25%")
-            self.assertEqual(rows[2][4:7], ["8", "████████ 100%", "0/8"])
-
-            # Its details are the partition's, narrowed to those nodes.
-            await self.click_row(pilot, "partitions", 1)
-            self.assertIn("gpu › h100  UP  usable", self.detail())
-            self.assertIn(
-                "Nodes 1 (1 mixed) · pending jobs asking for it: 5", self.detail()
+            self.assertEqual(rows[2][4], "h100_1g:8 + h100_2g:4")
+            self.assertEqual(rows[2][8], "")
+            self.assertEqual(
+                rows[3][1:], ["", "", "", "8", "████████ 100%", "0/8", "", "0", ""]
             )
-            self.assertIn("1 node: 60 CPUs / 512 GB / h100:4", self.detail())
+
+            # A kind's details are the partition's, narrowed to its nodes.
+            await self.click_cell(pilot, "partitions", 1, 2)
+            self.assertIn("gpu › 60 CPUs / 512 GB / h100:4  UP  usable", self.detail())
+            self.assertIn(
+                "Nodes 1 (1 mixed) · pending jobs asking for h100: 5", self.detail()
+            )
+            self.assertEqual(self.detail().splitlines()[3].strip(), "a")
             self.assertNotIn("h100_1g", self.detail())
-            # The rows above and below it are still their partitions.
-            await self.click_row(pilot, "partitions", 0)
+            # With several GPU types it stands for none of them.
+            await self.click_cell(pilot, "partitions", 2, 2)
+            self.assertIn("Nodes 1 (1 mixed)\n", self.detail())
+            self.assertIn("GPUs h100_2g: 4 free", self.detail())
+            # A type's details are narrowed again.
+            await self.click_cell(pilot, "partitions", 3, 2)
+            self.assertIn(
+                "gpu › 60 CPUs / 512 GB / h100_1g:8 / h100_2g:4 › h100_1g",
+                self.detail(),
+            )
+            self.assertIn("pending jobs asking for h100_1g: 0", self.detail())
+            self.assertNotIn("GPUs h100_2g", self.detail())
+            # The rows above and below them are still their partitions.
+            await self.click_cell(pilot, "partitions", 0, 2)
             self.assertIn("Nodes 2 (2 mixed) · pending jobs 12", self.detail())
-            await self.click_row(pilot, "partitions", 4)
+            await self.click_cell(pilot, "partitions", 5, 2)
             self.assertTrue(self.detail().startswith("long  UP  usable"))
+
+    async def test_keeps_a_table_scrolled_where_it_was_when_refilled(self):
+        async with self.app.run_test(size=(150, 44)) as pilot:
+            await self.settle(pilot)
+            table = self.table("partitions")
+            rows = [(str(i), (f"p{i}", *[""] * 9)) for i in range(60)]
+            self.view.refill(table, rows)
+            await pilot.pause()
+            table.scroll_to(y=20, animate=False)
+            await pilot.pause()
+            self.assertEqual(table.scroll_y, 20)
+
+            # As a refresh or opening a row does: clearing a table alone
+            # would scroll it back to the top.
+            self.view.refill(table, rows)
+            await pilot.pause()
+            self.assertEqual(table.scroll_y, 20)
+            # With fewer rows it is as far down as they go.
+            self.view.refill(table, rows[:5])
+            await pilot.pause()
+            self.assertEqual(table.scroll_y, 0)
 
     async def test_shows_a_single_node_by_resource_in_place_of_its_partitions(self):
         async with self.app.run_test(size=(150, 44)) as pilot:
